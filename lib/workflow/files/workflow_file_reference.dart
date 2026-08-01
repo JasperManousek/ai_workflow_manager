@@ -20,4 +20,9 @@ class WorkflowFileReference {
   final WorkflowStorage storage;
   final String relativePath;
   final WorkflowFileFormat format;
+
+  @override
+  String toString() {
+    return '${storage.name}:$relativePath';
+  }
 }

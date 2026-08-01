@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'screens/workflows_screen.dart';
+
 void main() {
   runApp(const AiCoordinatorApp());
 }
@@ -61,7 +63,7 @@ class MainScreen extends StatelessWidget {
         body: const TabBarView(
           children: [
             ChatTab(),
-            WorkflowsTab(),
+            WorkflowsScreen(),
             RunsTab(),
             NodesTab(),
             SettingsTab(),
@@ -80,20 +82,6 @@ class ChatTab extends StatelessWidget {
     return const Center(
       child: Text(
         'The chat interface will go here.',
-        style: TextStyle(fontSize: 20),
-      ),
-    );
-  }
-}
-
-class WorkflowsTab extends StatelessWidget {
-  const WorkflowsTab({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(
-      child: Text(
-        'The workflow editor will go here.',
         style: TextStyle(fontSize: 20),
       ),
     );

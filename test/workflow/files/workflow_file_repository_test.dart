@@ -1,8 +1,9 @@
 import 'dart:io';
 
+import 'package:ai_workflow_manager/workflow/files/workflow_file_access_event.dart';
+import 'package:ai_workflow_manager/workflow/files/workflow_file_reference.dart';
 import 'package:ai_workflow_manager/workflow/files/workflow_file_repository.dart';
 import 'package:ai_workflow_manager/workflow/files/workflow_file_roots.dart';
-import 'package:ai_workflow_manager/workflow/files/workflow_file_reference.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as path;
 
@@ -10,6 +11,7 @@ void main() {
   late Directory testDirectory;
   late WorkflowFileRoots roots;
   late WorkflowFileRepository repository;
+  late List<WorkflowFileAccessEvent> events;
 
   setUp(() {
     testDirectory = Directory.systemTemp.createTempSync(
@@ -18,156 +20,187 @@ void main() {
 
     roots = WorkflowFileRoots(
       source: Directory(
-        path.join(testDirectory.path, 'source'),
+        path.join(
+          testDirectory.path,
+          'source',
+        ),
       )..createSync(),
       working: Directory(
-        path.join(testDirectory.path, 'working'),
+        path.join(
+          testDirectory.path,
+          'working',
+        ),
       )..createSync(),
       persistent: Directory(
-        path.join(testDirectory.path, 'persistent'),
+        path.join(
+          testDirectory.path,
+          'persistent',
+        ),
       )..createSync(),
     );
 
+    events = [];
+
     repository = WorkflowFileRepository(
       roots: roots,
+      nodeId: 'test-node',
+      nodeExecutionId: 'test-execution-1',
+      onEvent: (event) {
+        events.add(event);
+      },
     );
   });
 
   tearDown(() {
     if (testDirectory.existsSync()) {
-      testDirectory.deleteSync(recursive: true);
+      testDirectory.deleteSync(
+        recursive: true,
+      );
     }
   });
 
-  group('WorkflowFileRepository.resolve', () {
-    test('resolves a file inside the working directory', () {
+  group('exists', () {
+    test('returns false for a missing file', () async {
       const reference = WorkflowFileReference(
         storage: WorkflowStorage.working,
-        relativePath: 'prepared/context.md',
-        format: WorkflowFileFormat.markdown,
+        relativePath: 'missing.txt',
+        format: WorkflowFileFormat.plainText,
       );
 
-      final file = repository.resolve(reference);
+      final result = await repository.exists(
+        reference,
+      );
 
-      final expectedPath = path.normalize(
+      expect(result, isFalse);
+
+      expect(
+        events.map((event) => event.phase),
+        [
+          WorkflowFileAccessPhase.started,
+          WorkflowFileAccessPhase.completed,
+        ],
+      );
+
+      expect(
+        events.last.operation,
+        WorkflowFileOperation.inspect,
+      );
+
+      expect(
+        events.last.exists,
+        isFalse,
+      );
+    });
+  });
+
+  group('readText', () {
+    test('reads UTF-8 source content', () async {
+      final sourceFile = File(
         path.join(
-          roots.working.absolute.path,
-          'prepared/context.md',
+          roots.source.path,
+          'input.md',
         ),
       );
 
-      expect(file.path, expectedPath);
-    });
+      await sourceFile.writeAsString(
+        'Hello. Grüße aus Aachen.',
+      );
 
-    test('uses the source root for source files', () {
       const reference = WorkflowFileReference(
         storage: WorkflowStorage.source,
-        relativePath: 'documents/input.txt',
-        format: WorkflowFileFormat.plainText,
-      );
-
-      final file = repository.resolve(reference);
-
-      final expectedPath = path.normalize(
-        path.join(
-          roots.source.absolute.path,
-          'documents/input.txt',
-        ),
-      );
-
-      expect(file.path, expectedPath);
-    });
-
-    test('uses the persistent root for persistent files', () {
-      const reference = WorkflowFileReference(
-        storage: WorkflowStorage.persistent,
-        relativePath: 'indexes/source-index.json',
-        format: WorkflowFileFormat.json,
-      );
-
-      final file = repository.resolve(reference);
-
-      final expectedPath = path.normalize(
-        path.join(
-          roots.persistent.absolute.path,
-          'indexes/source-index.json',
-        ),
-      );
-
-      expect(file.path, expectedPath);
-    });
-
-    test('normalizes path segments that remain inside the root', () {
-      const reference = WorkflowFileReference(
-        storage: WorkflowStorage.working,
-        relativePath: 'prepared/drafts/../context.md',
+        relativePath: 'input.md',
         format: WorkflowFileFormat.markdown,
       );
 
-      final file = repository.resolve(reference);
-
-      final expectedPath = path.normalize(
-        path.join(
-          roots.working.absolute.path,
-          'prepared/context.md',
-        ),
-      );
-
-      expect(file.path, expectedPath);
-    });
-
-    test('rejects an empty relative path', () {
-      const reference = WorkflowFileReference(
-        storage: WorkflowStorage.working,
-        relativePath: '',
-        format: WorkflowFileFormat.plainText,
+      final content = await repository.readText(
+        reference,
       );
 
       expect(
-        () => repository.resolve(reference),
+        content,
+        'Hello. Grüße aus Aachen.',
+      );
+
+      expect(
+        events.map((event) => event.phase),
+        [
+          WorkflowFileAccessPhase.started,
+          WorkflowFileAccessPhase.completed,
+        ],
+      );
+
+      expect(
+        events.last.operation,
+        WorkflowFileOperation.read,
+      );
+
+      expect(
+        events.last.sizeBytes,
+        greaterThan(0),
+      );
+    });
+
+    test('reports a missing file', () async {
+      const reference = WorkflowFileReference(
+        storage: WorkflowStorage.source,
+        relativePath: 'missing.md',
+        format: WorkflowFileFormat.markdown,
+      );
+
+      await expectLater(
+        repository.readText(reference),
         throwsA(
           isA<WorkflowFileAccessException>().having(
             (exception) => exception.message,
             'message',
-            contains('cannot be empty'),
+            allOf(
+              contains('missing.md'),
+              contains('does not exist'),
+            ),
+          ),
+        ),
+      );
+
+      expect(
+        events.map((event) => event.phase),
+        [
+          WorkflowFileAccessPhase.started,
+          WorkflowFileAccessPhase.failed,
+        ],
+      );
+    });
+
+    test('rejects a path that escapes its root', () async {
+      const reference = WorkflowFileReference(
+        storage: WorkflowStorage.source,
+        relativePath: '../outside.md',
+        format: WorkflowFileFormat.markdown,
+      );
+
+      await expectLater(
+        repository.readText(reference),
+        throwsA(
+          isA<WorkflowFileAccessException>().having(
+            (exception) => exception.message,
+            'message',
+            contains('escapes the source directory'),
           ),
         ),
       );
     });
 
-    test('rejects a whitespace-only relative path', () {
-      const reference = WorkflowFileReference(
-        storage: WorkflowStorage.working,
-        relativePath: '   ',
-        format: WorkflowFileFormat.plainText,
-      );
-
-      expect(
-        () => repository.resolve(reference),
-        throwsA(
-          isA<WorkflowFileAccessException>().having(
-            (exception) => exception.message,
-            'message',
-            contains('cannot be empty'),
-          ),
-        ),
-      );
-    });
-
-    test('rejects an absolute path', () {
-      final absolutePath = path.join(
-        testDirectory.absolute.path,
-        'outside.txt',
-      );
-
+    test('rejects an absolute path', () async {
       final reference = WorkflowFileReference(
-        storage: WorkflowStorage.working,
-        relativePath: absolutePath,
-        format: WorkflowFileFormat.plainText,
+        storage: WorkflowStorage.source,
+        relativePath: path.join(
+          testDirectory.absolute.path,
+          'outside.md',
+        ),
+        format: WorkflowFileFormat.markdown,
       );
 
-      expect(
-        () => repository.resolve(reference),
+      await expectLater(
+        repository.readText(reference),
         throwsA(
           isA<WorkflowFileAccessException>().having(
             (exception) => exception.message,
@@ -177,36 +210,253 @@ void main() {
         ),
       );
     });
+  });
 
-    test('rejects a path that escapes the selected root', () {
+  group('writeText', () {
+    test('creates parent directories and writes a file', () async {
       const reference = WorkflowFileReference(
         storage: WorkflowStorage.working,
-        relativePath: '../outside.txt',
-        format: WorkflowFileFormat.plainText,
+        relativePath: 'prepared/context.md',
+        format: WorkflowFileFormat.markdown,
+      );
+
+      await repository.writeText(
+        reference,
+        '# Context\n',
+      );
+
+      final writtenFile = File(
+        path.join(
+          roots.working.path,
+          'prepared',
+          'context.md',
+        ),
       );
 
       expect(
-        () => repository.resolve(reference),
+        await writtenFile.readAsString(),
+        '# Context\n',
+      );
+
+      expect(
+        events.last.phase,
+        WorkflowFileAccessPhase.completed,
+      );
+
+      expect(
+        events.last.operation,
+        WorkflowFileOperation.write,
+      );
+
+      expect(
+        events.last.replacedExisting,
+        isFalse,
+      );
+    });
+
+    test('replaces an existing persistent file', () async {
+      final existingFile = File(
+        path.join(
+          roots.persistent.path,
+          'summary.txt',
+        ),
+      );
+
+      await existingFile.writeAsString(
+        'Old content',
+      );
+
+      const reference = WorkflowFileReference(
+        storage: WorkflowStorage.persistent,
+        relativePath: 'summary.txt',
+        format: WorkflowFileFormat.plainText,
+      );
+
+      await repository.writeText(
+        reference,
+        'New content',
+      );
+
+      expect(
+        await existingFile.readAsString(),
+        'New content',
+      );
+
+      expect(
+        events.last.replacedExisting,
+        isTrue,
+      );
+    });
+
+    test('rejects writes to source storage', () async {
+      const reference = WorkflowFileReference(
+        storage: WorkflowStorage.source,
+        relativePath: 'source.md',
+        format: WorkflowFileFormat.markdown,
+      );
+
+      await expectLater(
+        repository.writeText(
+          reference,
+          'Attempted modification',
+        ),
         throwsA(
           isA<WorkflowFileAccessException>().having(
             (exception) => exception.message,
             'message',
-            contains('escapes the working directory'),
+            contains('Source files are read-only'),
+          ),
+        ),
+      );
+
+      final sourceFile = File(
+        path.join(
+          roots.source.path,
+          'source.md',
+        ),
+      );
+
+      expect(
+        await sourceFile.exists(),
+        isFalse,
+      );
+
+      expect(
+        events.map((event) => event.phase),
+        [
+          WorkflowFileAccessPhase.started,
+          WorkflowFileAccessPhase.failed,
+        ],
+      );
+    });
+  });
+
+  group('JSON', () {
+    test('writes and reads structured JSON', () async {
+      const reference = WorkflowFileReference(
+        storage: WorkflowStorage.working,
+        relativePath: 'state/counter.json',
+        format: WorkflowFileFormat.json,
+      );
+
+      await repository.writeJson(
+        reference,
+        {
+          'count': 4,
+          'continue': true,
+        },
+      );
+
+      final value = await repository.readJson(
+        reference,
+      );
+
+      expect(
+        value,
+        {
+          'count': 4,
+          'continue': true,
+        },
+      );
+    });
+
+    test('rejects readJson for a non-JSON reference', () async {
+      const reference = WorkflowFileReference(
+        storage: WorkflowStorage.working,
+        relativePath: 'notes.md',
+        format: WorkflowFileFormat.markdown,
+      );
+
+      await expectLater(
+        repository.readJson(reference),
+        throwsA(
+          isA<WorkflowFileAccessException>().having(
+            (exception) => exception.message,
+            'message',
+            contains('not JSON'),
           ),
         ),
       );
     });
 
-    test('does not create the resolved file', () {
+    test('reports invalid JSON content', () async {
+      final invalidFile = File(
+        path.join(
+          roots.working.path,
+          'invalid.json',
+        ),
+      );
+
+      await invalidFile.writeAsString(
+        '{"count": }',
+      );
+
       const reference = WorkflowFileReference(
         storage: WorkflowStorage.working,
-        relativePath: 'result.txt',
+        relativePath: 'invalid.json',
+        format: WorkflowFileFormat.json,
+      );
+
+      await expectLater(
+        repository.readJson(reference),
+        throwsA(
+          isA<WorkflowFileAccessException>().having(
+            (exception) => exception.message,
+            'message',
+            contains('contains invalid JSON'),
+          ),
+        ),
+      );
+    });
+  });
+
+  if (!Platform.isWindows) {
+    test('rejects symbolic-link traversal', () async {
+      final outsideDirectory = Directory(
+        path.join(
+          testDirectory.path,
+          'outside',
+        ),
+      )..createSync();
+
+      final outsideFile = File(
+        path.join(
+          outsideDirectory.path,
+          'private.txt',
+        ),
+      );
+
+      await outsideFile.writeAsString(
+        'Private content',
+      );
+
+      final link = Link(
+        path.join(
+          roots.source.path,
+          'linked-directory',
+        ),
+      );
+
+      await link.create(
+        outsideDirectory.path,
+      );
+
+      const reference = WorkflowFileReference(
+        storage: WorkflowStorage.source,
+        relativePath: 'linked-directory/private.txt',
         format: WorkflowFileFormat.plainText,
       );
 
-      final file = repository.resolve(reference);
-
-      expect(file.existsSync(), isFalse);
+      await expectLater(
+        repository.readText(reference),
+        throwsA(
+          isA<WorkflowFileAccessException>().having(
+            (exception) => exception.message,
+            'message',
+            contains('contains a symbolic link'),
+          ),
+        ),
+      );
     });
-  });
+  }
 }
