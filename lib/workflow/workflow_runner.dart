@@ -13,10 +13,12 @@ import 'workflow_validator.dart';
 class WorkflowRunner {
   WorkflowRunner({
     required this.roots,
+    this.onNodeStarted,
     this.onFileAccessEvent = _ignoreFileAccessEvent,
   });
 
   final WorkflowFileRoots roots;
+  final void Function(String nodeId, String nodeName)? onNodeStarted;
   final WorkflowFileAccessEventSink onFileAccessEvent;
 
   Future<void> run(WorkflowDefinition workflow) async {
@@ -34,6 +36,8 @@ class WorkflowRunner {
       final nodeExecutionId = 'node-execution-$nodeExecutionSequence';
 
       try {
+        onNodeStarted?.call(currentNode.id, currentNode.name);
+
         if (currentNode is StartNode) {
           currentNode = nodesById[currentNode.nextNodeId]!;
           continue;
