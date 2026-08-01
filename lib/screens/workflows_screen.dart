@@ -1,3 +1,6 @@
+import 'dart:math' as math;
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../workflow/editor/workflow_draft.dart';
@@ -5,7 +8,7 @@ import '../workflow/editor/workflow_editor_controller.dart';
 import '../workflow/files/workflow_file_reference.dart';
 
 const double _nodeCardWidth = 220;
-const double _nodeCardHeight = 112;
+const double _nodeCardHeight = 136;
 
 class WorkflowsScreen extends StatefulWidget {
   const WorkflowsScreen({super.key});
@@ -200,8 +203,9 @@ class _NodePalette extends StatelessWidget {
             ),
             const SizedBox(height: 20),
             const Text(
-              'Start and End are created automatically. Select a node to '
-              'configure files and runtime connections.',
+              'Start and End are created automatically. Drag flow handles '
+              'to connect nodes. Use the mouse wheel to zoom and drag the '
+              'empty background to move around the canvas.',
             ),
           ],
         ),
@@ -234,61 +238,565 @@ class _PaletteButton extends StatelessWidget {
   }
 }
 
-class _WorkflowCanvas extends StatelessWidget {
+enum _RuntimeConnectionKind {
+  next,
+  continueBranch,
+  finishedBranch,
+}
+
+class _ConnectionDragState {
+  const _ConnectionDragState({
+    required this.sourceNodeId,
+    required this.kind,
+    required this.currentPosition,
+  });
+
+  final String sourceNodeId;
+  final _RuntimeConnectionKind kind;
+  final Offset currentPosition;
+
+  _ConnectionDragState movedTo(Offset position) {
+    return _ConnectionDragState(
+      sourceNodeId: sourceNodeId,
+      kind: kind,
+      currentPosition: position,
+    );
+  }
+}
+
+class _NodeDragState {
+  const _NodeDragState({
+    required this.nodeId,
+    required this.lastScenePosition,
+  });
+
+  final String nodeId;
+  final Offset lastScenePosition;
+
+  _NodeDragState movedTo(Offset position) {
+    return _NodeDragState(
+      nodeId: nodeId,
+      lastScenePosition: position,
+    );
+  }
+}
+
+class _WorkflowCanvas extends StatefulWidget {
   const _WorkflowCanvas({required this.controller});
 
   final WorkflowEditorController controller;
 
   @override
+  State<_WorkflowCanvas> createState() => _WorkflowCanvasState();
+}
+
+class _WorkflowCanvasState extends State<_WorkflowCanvas> {
+  static const double _sceneWidth = 4000;
+  static const double _sceneHeight = 2600;
+  static const double _minimumScale = 0.35;
+  static const double _maximumScale = 2.5;
+  static const double _nodePortInset = 18;
+
+  final GlobalKey _canvasKey = GlobalKey();
+
+  double _scale = 1;
+  Offset _panOffset = Offset.zero;
+  _ConnectionDragState? _connectionDrag;
+  _NodeDragState? _nodeDrag;
+  String? _connectionTargetNodeId;
+
+  WorkflowEditorController get controller => widget.controller;
+
+  @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return ColoredBox(
-          color: Theme.of(context).colorScheme.surfaceContainerLowest,
-          child: ClipRect(
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: CustomPaint(
-                    painter: _WorkflowConnectionsPainter(
-                      nodes: controller.draft.nodes,
-                      lineColor: Theme.of(context).colorScheme.outline,
-                    ),
-                  ),
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Listener(
+      key: _canvasKey,
+      behavior: HitTestBehavior.translucent,
+      onPointerSignal: _handlePointerSignal,
+      child: ClipRect(
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => controller.selectNode(null),
+                onPanUpdate: (details) {
+                  setState(() {
+                    _panOffset += details.delta;
+                  });
+                },
+                child: ColoredBox(
+                  color: colorScheme.surfaceContainerLowest,
                 ),
-                for (final node in controller.draft.nodes)
-                  Positioned(
-                    left: node.position.x,
-                    top: node.position.y,
-                    width: _nodeCardWidth,
-                    height: _nodeCardHeight,
-                    child: GestureDetector(
-                      onTap: () => controller.selectNode(node.id),
-                      onPanUpdate: (details) {
-                        controller.moveNode(
-                          node.id,
-                          details.delta.dx,
-                          details.delta.dy,
-                          canvasWidth: constraints.maxWidth,
-                          canvasHeight: constraints.maxHeight,
-                          nodeWidth: _nodeCardWidth,
-                          nodeHeight: _nodeCardHeight,
-                        );
-                      },
-                      child: MouseRegion(
-                        cursor: SystemMouseCursors.move,
-                        child: _WorkflowNodeCard(
-                          node: node,
-                          selected: controller.selectedNodeId == node.id,
+              ),
+            ),
+            Transform.translate(
+              offset: _panOffset,
+              child: Transform.scale(
+                scale: _scale,
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: _sceneWidth,
+                  height: _sceneHeight,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: CustomPaint(
+                            painter: _WorkflowConnectionsPainter(
+                              nodes: controller.draft.nodes,
+                              lineColor: colorScheme.outline,
+                              continueColor: colorScheme.primary,
+                              finishedColor: colorScheme.error,
+                              drag: _connectionDrag,
+                              highlightedTargetNodeId:
+                                  _connectionTargetNodeId,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
+                      for (final node in controller.draft.nodes)
+                        Positioned(
+                          left: node.position.x - _nodePortInset,
+                          top: node.position.y,
+                          width: _nodeCardWidth + (_nodePortInset * 2),
+                          height: _nodeCardHeight,
+                          child: _WorkflowNodeWidget(
+                            node: node,
+                            selected: controller.selectedNodeId == node.id,
+                            highlightedAsTarget:
+                                _connectionTargetNodeId == node.id,
+                            onSelect: () => controller.selectNode(node.id),
+                            onNodeDragStart: (details) =>
+                                _startNodeDrag(node, details),
+                            onNodeDragUpdate: _updateNodeDrag,
+                            onNodeDragEnd: _endNodeDrag,
+                            onConnectionDragStart: (kind, details) =>
+                                _startConnectionDrag(node, kind, details),
+                            onConnectionDragUpdate: _updateConnectionDrag,
+                            onConnectionDragEnd: _endConnectionDrag,
+                            onConnectionDragCancel: _cancelConnectionDrag,
+                          ),
+                        ),
+                    ],
                   ),
-              ],
+                ),
+              ),
+            ),
+            Positioned(
+              right: 12,
+              bottom: 12,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: colorScheme.surface,
+                  border: Border.all(color: colorScheme.outlineVariant),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  child: Text('${(_scale * 100).round()}%'),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _handlePointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) {
+      return;
+    }
+
+    final zoomFactor = math.exp(-event.scrollDelta.dy / 500);
+    final nextScale = (_scale * zoomFactor)
+        .clamp(_minimumScale, _maximumScale)
+        .toDouble();
+
+    if ((nextScale - _scale).abs() < 0.001) {
+      return;
+    }
+
+    final focalPoint = event.localPosition;
+    final scenePoint = _viewportToScene(focalPoint);
+
+    setState(() {
+      _scale = nextScale;
+      _panOffset = focalPoint - (scenePoint * nextScale);
+    });
+  }
+
+  void _startNodeDrag(
+    WorkflowNodeDraft node,
+    DragStartDetails details,
+  ) {
+    controller.selectNode(node.id);
+    _nodeDrag = _NodeDragState(
+      nodeId: node.id,
+      lastScenePosition: _globalToScene(details.globalPosition),
+    );
+  }
+
+  void _updateNodeDrag(DragUpdateDetails details) {
+    final drag = _nodeDrag;
+    if (drag == null) {
+      return;
+    }
+
+    final nextScenePosition = _globalToScene(details.globalPosition);
+    final delta = nextScenePosition - drag.lastScenePosition;
+    _nodeDrag = drag.movedTo(nextScenePosition);
+
+    controller.moveNode(
+      drag.nodeId,
+      delta.dx,
+      delta.dy,
+      canvasWidth: _sceneWidth,
+      canvasHeight: _sceneHeight,
+      nodeWidth: _nodeCardWidth,
+      nodeHeight: _nodeCardHeight,
+    );
+  }
+
+  void _endNodeDrag(DragEndDetails details) {
+    _nodeDrag = null;
+  }
+
+  void _startConnectionDrag(
+    WorkflowNodeDraft node,
+    _RuntimeConnectionKind kind,
+    DragStartDetails details,
+  ) {
+    controller.selectNode(node.id);
+
+    setState(() {
+      _connectionDrag = _ConnectionDragState(
+        sourceNodeId: node.id,
+        kind: kind,
+        currentPosition: _outputAnchor(node, kind),
+      );
+      _connectionTargetNodeId = null;
+    });
+  }
+
+  void _updateConnectionDrag(DragUpdateDetails details) {
+    final drag = _connectionDrag;
+    if (drag == null) {
+      return;
+    }
+
+    final scenePosition = _globalToScene(details.globalPosition);
+    final targetNodeId = _targetNodeAt(scenePosition);
+
+    setState(() {
+      _connectionDrag = drag.movedTo(scenePosition);
+      _connectionTargetNodeId = targetNodeId;
+    });
+  }
+
+  void _endConnectionDrag(DragEndDetails details) {
+    final drag = _connectionDrag;
+    final targetNodeId = _connectionTargetNodeId;
+
+    if (drag != null && targetNodeId != null) {
+      _connect(drag, targetNodeId);
+    }
+
+    _cancelConnectionDrag();
+  }
+
+  void _cancelConnectionDrag() {
+    if (_connectionDrag == null && _connectionTargetNodeId == null) {
+      return;
+    }
+
+    setState(() {
+      _connectionDrag = null;
+      _connectionTargetNodeId = null;
+    });
+  }
+
+  void _connect(_ConnectionDragState drag, String targetNodeId) {
+    final sourceNode = _nodeById(drag.sourceNodeId);
+    if (sourceNode == null) {
+      return;
+    }
+
+    switch (sourceNode) {
+      case StartNodeDraft():
+        controller.setStartNextNode(sourceNode, targetNodeId);
+      case ActionNodeDraft():
+        controller.setNextNode(sourceNode, targetNodeId);
+      case CounterDecisionNodeDraft():
+        switch (drag.kind) {
+          case _RuntimeConnectionKind.continueBranch:
+            controller.setCounterContinueNode(sourceNode, targetNodeId);
+          case _RuntimeConnectionKind.finishedBranch:
+            controller.setCounterFinishedNode(sourceNode, targetNodeId);
+          case _RuntimeConnectionKind.next:
+            break;
+        }
+      case EndNodeDraft():
+        break;
+    }
+  }
+
+  WorkflowNodeDraft? _nodeById(String nodeId) {
+    for (final node in controller.draft.nodes) {
+      if (node.id == nodeId) {
+        return node;
+      }
+    }
+    return null;
+  }
+
+  String? _targetNodeAt(Offset scenePosition) {
+    for (final node in controller.draft.nodes.reversed) {
+      if (node is StartNodeDraft) {
+        continue;
+      }
+
+      final nodeBounds = Rect.fromLTWH(
+        node.position.x,
+        node.position.y,
+        _nodeCardWidth,
+        _nodeCardHeight,
+      );
+      if (nodeBounds.inflate(8).contains(scenePosition)) {
+        return node.id;
+      }
+    }
+
+    return null;
+  }
+
+  Offset _globalToScene(Offset globalPosition) {
+    final renderObject = _canvasKey.currentContext?.findRenderObject();
+    if (renderObject is! RenderBox) {
+      return Offset.zero;
+    }
+
+    return _viewportToScene(renderObject.globalToLocal(globalPosition));
+  }
+
+  Offset _viewportToScene(Offset viewportPosition) {
+    return (viewportPosition - _panOffset) / _scale;
+  }
+}
+
+class _WorkflowNodeWidget extends StatelessWidget {
+  const _WorkflowNodeWidget({
+    required this.node,
+    required this.selected,
+    required this.highlightedAsTarget,
+    required this.onSelect,
+    required this.onNodeDragStart,
+    required this.onNodeDragUpdate,
+    required this.onNodeDragEnd,
+    required this.onConnectionDragStart,
+    required this.onConnectionDragUpdate,
+    required this.onConnectionDragEnd,
+    required this.onConnectionDragCancel,
+  });
+
+  static const double _portInset = 18;
+  static const double _portHitSize = 30;
+  static const double _outputPortOverlap = 2;
+
+  final WorkflowNodeDraft node;
+  final bool selected;
+  final bool highlightedAsTarget;
+  final VoidCallback onSelect;
+  final GestureDragStartCallback onNodeDragStart;
+  final GestureDragUpdateCallback onNodeDragUpdate;
+  final GestureDragEndCallback onNodeDragEnd;
+  final void Function(
+    _RuntimeConnectionKind kind,
+    DragStartDetails details,
+  ) onConnectionDragStart;
+  final GestureDragUpdateCallback onConnectionDragUpdate;
+  final GestureDragEndCallback onConnectionDragEnd;
+  final VoidCallback onConnectionDragCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Positioned(
+          left: _portInset,
+          top: 0,
+          width: _nodeCardWidth,
+          height: _nodeCardHeight,
+          child: GestureDetector(
+            key: ValueKey('workflow-node-${node.id}'),
+            behavior: HitTestBehavior.opaque,
+            onTap: onSelect,
+            onPanStart: onNodeDragStart,
+            onPanUpdate: onNodeDragUpdate,
+            onPanEnd: onNodeDragEnd,
+            child: MouseRegion(
+              cursor: SystemMouseCursors.move,
+              child: _WorkflowNodeCard(
+                node: node,
+                selected: selected,
+              ),
             ),
           ),
-        );
-      },
+        ),
+        if (node is! StartNodeDraft)
+          Positioned(
+            left: _portInset - (_portHitSize / 2),
+            top: (_nodeCardHeight / 2) - (_portHitSize / 2),
+            width: _portHitSize,
+            height: _portHitSize,
+            child: _FlowPort(
+              tooltip: 'Flow input',
+              color: highlightedAsTarget
+                  ? colorScheme.primary
+                  : colorScheme.outline,
+              highlighted: highlightedAsTarget,
+            ),
+          ),
+        ..._outputPorts(context),
+      ],
+    );
+  }
+
+  List<Widget> _outputPorts(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return switch (node) {
+      StartNodeDraft() || ActionNodeDraft() => [
+        _positionedOutputPort(
+          centerY: _nodeCardHeight / 2,
+          kind: _RuntimeConnectionKind.next,
+          tooltip: 'Drag to connect next node',
+          color: colorScheme.outline,
+        ),
+      ],
+      CounterDecisionNodeDraft(limit: final limit) => [
+        _positionedOutputPort(
+          centerY: 42,
+          kind: _RuntimeConnectionKind.continueBranch,
+          tooltip: 'Continue when count < $limit',
+          color: colorScheme.primary,
+          label: 'C',
+        ),
+        _positionedOutputPort(
+          centerY: 94,
+          kind: _RuntimeConnectionKind.finishedBranch,
+          tooltip: 'Finished when count ≥ $limit',
+          color: colorScheme.error,
+          label: 'F',
+        ),
+      ],
+      EndNodeDraft() => const [],
+    };
+  }
+
+  Widget _positionedOutputPort({
+    required double centerY,
+    required _RuntimeConnectionKind kind,
+    required String tooltip,
+    required Color color,
+    String? label,
+  }) {
+    return Positioned(
+      left: _portInset + _nodeCardWidth - _outputPortOverlap,
+      top: centerY - (_portHitSize / 2),
+      width: _portHitSize,
+      height: _portHitSize,
+      child: _FlowPort(
+        key: ValueKey('flow-output-${node.id}-${kind.name}'),
+        tooltip: tooltip,
+        color: color,
+        label: label,
+        onPanStart: (details) => onConnectionDragStart(kind, details),
+        onPanUpdate: onConnectionDragUpdate,
+        onPanEnd: onConnectionDragEnd,
+        onPanCancel: onConnectionDragCancel,
+      ),
+    );
+  }
+}
+
+class _FlowPort extends StatelessWidget {
+  const _FlowPort({
+    super.key,
+    required this.tooltip,
+    required this.color,
+    this.highlighted = false,
+    this.label,
+    this.onPanStart,
+    this.onPanUpdate,
+    this.onPanEnd,
+    this.onPanCancel,
+  });
+
+  final String tooltip;
+  final Color color;
+  final bool highlighted;
+  final String? label;
+  final GestureDragStartCallback? onPanStart;
+  final GestureDragUpdateCallback? onPanUpdate;
+  final GestureDragEndCallback? onPanEnd;
+  final VoidCallback? onPanCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final port = Center(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 100),
+        width: highlighted ? 20 : 16,
+        height: highlighted ? 20 : 16,
+        decoration: BoxDecoration(
+          color: highlighted ? color : Theme.of(context).colorScheme.surface,
+          shape: BoxShape.circle,
+          border: Border.all(color: color, width: 2),
+        ),
+        alignment: Alignment.center,
+        child: label == null
+            ? null
+            : Text(
+                label!,
+                style: TextStyle(
+                  color: highlighted
+                      ? Theme.of(context).colorScheme.onPrimary
+                      : color,
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+      ),
+    );
+
+    if (onPanStart == null) {
+      return Tooltip(message: tooltip, child: port);
+    }
+
+    return Tooltip(
+      message: tooltip,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onPanStart: onPanStart,
+          onPanUpdate: onPanUpdate,
+          onPanEnd: onPanEnd,
+          onPanCancel: onPanCancel,
+          child: port,
+        ),
+      ),
     );
   }
 }
@@ -337,6 +845,8 @@ class _WorkflowNodeCard extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     _labelFor(node),
+                    maxLines: node is CounterDecisionNodeDraft ? 3 : 2,
+                    overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
@@ -363,7 +873,10 @@ class _WorkflowNodeCard extends StatelessWidget {
       StartNodeDraft() => 'Start',
       WriteFileNodeDraft() => 'Action · Write File',
       CombineTextNodeDraft() => 'Action · Combine Text',
-      CounterDecisionNodeDraft() => 'Decision · Counter',
+      CounterDecisionNodeDraft() =>
+        'Decision · increments on each visit\n'
+        'Continue: count < ${node.limit}\n'
+        'Finished: count ≥ ${node.limit}',
       EndNodeDraft() => 'End',
     };
   }
@@ -428,11 +941,13 @@ class _NodeInspector extends StatelessWidget {
   ) {
     return switch (node) {
       StartNodeDraft() => [
-        _ConnectionField(
+        const _ConnectionInstructions(),
+        const SizedBox(height: 12),
+        _ConnectionSummary(
           label: 'Next node',
-          selectedNodeId: node.nextNodeId,
+          targetNodeId: node.nextNodeId,
           nodes: controller.draft.nodes,
-          onChanged: (value) => controller.setStartNextNode(node, value),
+          onClear: () => controller.setStartNextNode(node, null),
         ),
       ],
       WriteFileNodeDraft() => [
@@ -455,11 +970,13 @@ class _NodeInspector extends StatelessWidget {
           onChanged: () => controller.fileChanged(),
         ),
         const SizedBox(height: 16),
-        _ConnectionField(
+        const _ConnectionInstructions(),
+        const SizedBox(height: 12),
+        _ConnectionSummary(
           label: 'Next node',
-          selectedNodeId: node.nextNodeId,
+          targetNodeId: node.nextNodeId,
           nodes: controller.draft.nodes,
-          onChanged: (value) => controller.setNextNode(node, value),
+          onClear: () => controller.setNextNode(node, null),
         ),
       ],
       CombineTextNodeDraft() => [
@@ -501,17 +1018,29 @@ class _NodeInspector extends StatelessWidget {
           onChanged: () => controller.fileChanged(),
         ),
         const SizedBox(height: 16),
-        _ConnectionField(
+        const _ConnectionInstructions(),
+        const SizedBox(height: 12),
+        _ConnectionSummary(
           label: 'Next node',
-          selectedNodeId: node.nextNodeId,
+          targetNodeId: node.nextNodeId,
           nodes: controller.draft.nodes,
-          onChanged: (value) => controller.setNextNode(node, value),
+          onClear: () => controller.setNextNode(node, null),
         ),
       ],
       CounterDecisionNodeDraft() => [
-        const Text(
-          'Counter nodes with exactly the same name share one internal '
-          'counter during a run.',
+        Text(
+          'Every visit increments the internal counter named "${node.name}". '
+          'Counter nodes with exactly the same name share that counter during '
+          'the run.',
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'After incrementing: Continue is selected while the new count is '
+          'less than ${node.limit}. Finished is selected when the new count '
+          'is ${node.limit} or greater.',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
         ),
         const SizedBox(height: 16),
         TextFormField(
@@ -526,20 +1055,22 @@ class _NodeInspector extends StatelessWidget {
           },
         ),
         const SizedBox(height: 16),
-        _ConnectionField(
-          label: 'Continue node',
-          selectedNodeId: node.continueNodeId,
-          nodes: controller.draft.nodes,
-          onChanged: (value) =>
-              controller.setCounterContinueNode(node, value),
+        const _ConnectionInstructions(
+          message: 'Drag C for Continue or F for Finished to a target node.',
         ),
-        const SizedBox(height: 16),
-        _ConnectionField(
-          label: 'Finished node',
-          selectedNodeId: node.finishedNodeId,
+        const SizedBox(height: 12),
+        _ConnectionSummary(
+          label: 'Continue: count < ${node.limit}',
+          targetNodeId: node.continueNodeId,
           nodes: controller.draft.nodes,
-          onChanged: (value) =>
-              controller.setCounterFinishedNode(node, value),
+          onClear: () => controller.setCounterContinueNode(node, null),
+        ),
+        const SizedBox(height: 12),
+        _ConnectionSummary(
+          label: 'Finished: count ≥ ${node.limit}',
+          targetNodeId: node.finishedNodeId,
+          nodes: controller.draft.nodes,
+          onClear: () => controller.setCounterFinishedNode(node, null),
         ),
       ],
       EndNodeDraft() => [
@@ -549,44 +1080,77 @@ class _NodeInspector extends StatelessWidget {
   }
 }
 
-class _ConnectionField extends StatelessWidget {
-  const _ConnectionField({
-    required this.label,
-    required this.selectedNodeId,
-    required this.nodes,
-    required this.onChanged,
+class _ConnectionInstructions extends StatelessWidget {
+  const _ConnectionInstructions({
+    this.message =
+        'Drag the flow handle on the right side of the node to another node.',
   });
 
-  final String label;
-  final String? selectedNodeId;
-  final List<WorkflowNodeDraft> nodes;
-  final ValueChanged<String?> onChanged;
+  final String message;
 
   @override
   Widget build(BuildContext context) {
-    final possibleTargets = nodes
-        .where((node) => node is! StartNodeDraft)
-        .toList(growable: false);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Icon(Icons.drag_indicator, size: 20),
+        const SizedBox(width: 8),
+        Expanded(child: Text(message)),
+      ],
+    );
+  }
+}
 
-    return DropdownButtonFormField<String>(
-      value: selectedNodeId,
+class _ConnectionSummary extends StatelessWidget {
+  const _ConnectionSummary({
+    required this.label,
+    required this.targetNodeId,
+    required this.nodes,
+    required this.onClear,
+  });
+
+  final String label;
+  final String? targetNodeId;
+  final List<WorkflowNodeDraft> nodes;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final target = _targetNode();
+
+    return InputDecorator(
       decoration: InputDecoration(
         labelText: label,
         border: const OutlineInputBorder(),
+        suffixIcon: targetNodeId == null
+            ? null
+            : IconButton(
+                tooltip: 'Remove connection',
+                onPressed: onClear,
+                icon: const Icon(Icons.link_off),
+              ),
       ),
-      items: [
-        const DropdownMenuItem<String>(
-          value: null,
-          child: Text('Not connected'),
-        ),
-        for (final node in possibleTargets)
-          DropdownMenuItem<String>(
-            value: node.id,
-            child: Text('${node.name} (${node.id})'),
-          ),
-      ],
-      onChanged: onChanged,
+      child: Text(
+        target == null
+            ? 'Not connected'
+            : '${target.name} (${target.id})',
+      ),
     );
+  }
+
+  WorkflowNodeDraft? _targetNode() {
+    final id = targetNodeId;
+    if (id == null) {
+      return null;
+    }
+
+    for (final node in nodes) {
+      if (node.id == id) {
+        return node;
+      }
+    }
+
+    return null;
   }
 }
 
@@ -748,85 +1312,219 @@ class _FileReferenceEditor extends StatelessWidget {
   }
 }
 
+class _RuntimeConnectionLink {
+  const _RuntimeConnectionLink({
+    required this.source,
+    required this.targetNodeId,
+    required this.kind,
+  });
+
+  final WorkflowNodeDraft source;
+  final String targetNodeId;
+  final _RuntimeConnectionKind kind;
+}
+
 class _WorkflowConnectionsPainter extends CustomPainter {
   _WorkflowConnectionsPainter({
     required this.nodes,
     required this.lineColor,
+    required this.continueColor,
+    required this.finishedColor,
+    required this.drag,
+    required this.highlightedTargetNodeId,
   });
 
   final List<WorkflowNodeDraft> nodes;
   final Color lineColor;
+  final Color continueColor;
+  final Color finishedColor;
+  final _ConnectionDragState? drag;
+  final String? highlightedTargetNodeId;
 
   @override
   void paint(Canvas canvas, Size size) {
     final nodesById = {for (final node in nodes) node.id: node};
-    final paint = Paint()
-      ..color = lineColor
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke;
 
     for (final node in nodes) {
-      for (final targetId in _targetNodeIds(node)) {
-        final target = nodesById[targetId];
+      for (final link in _linksFrom(node)) {
+        final target = nodesById[link.targetNodeId];
         if (target == null) {
           continue;
         }
 
-        final start = Offset(
-          node.position.x + _nodeCardWidth,
-          node.position.y + (_nodeCardHeight / 2),
+        _drawConnection(
+          canvas,
+          start: _outputAnchor(link.source, link.kind),
+          end: _inputAnchor(target) - const Offset(8, 0),
+          color: _colorFor(link.kind),
         );
-        final end = Offset(
-          target.position.x,
-          target.position.y + (_nodeCardHeight / 2),
-        );
-        final horizontalDistance = (end.dx - start.dx).abs();
-        final controlOffset = horizontalDistance.clamp(60, 180).toDouble();
-
-        final path = Path()
-          ..moveTo(start.dx, start.dy)
-          ..cubicTo(
-            start.dx + controlOffset,
-            start.dy,
-            end.dx - controlOffset,
-            end.dy,
-            end.dx,
-            end.dy,
-          );
-
-        canvas.drawPath(path, paint);
-        _drawArrow(canvas, paint, end);
       }
     }
+
+    final activeDrag = drag;
+    if (activeDrag == null) {
+      return;
+    }
+
+    final source = nodesById[activeDrag.sourceNodeId];
+    if (source == null) {
+      return;
+    }
+
+    var previewEnd = activeDrag.currentPosition;
+    final highlightedTarget = nodesById[highlightedTargetNodeId];
+    if (highlightedTarget != null) {
+      previewEnd = _inputAnchor(highlightedTarget) - const Offset(8, 0);
+    }
+
+    _drawConnection(
+      canvas,
+      start: _outputAnchor(source, activeDrag.kind),
+      end: previewEnd,
+      color: _colorFor(activeDrag.kind),
+    );
   }
 
-  void _drawArrow(Canvas canvas, Paint paint, Offset end) {
+  void _drawConnection(
+    Canvas canvas, {
+    required Offset start,
+    required Offset end,
+    required Color color,
+  }) {
+    final horizontalDistance = (end.dx - start.dx).abs();
+    final controlOffset = horizontalDistance.clamp(60, 180).toDouble();
+    final firstControl = Offset(start.dx + controlOffset, start.dy);
+    final secondControl = Offset(end.dx - controlOffset, end.dy);
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
+
+    final path = Path()
+      ..moveTo(start.dx, start.dy)
+      ..cubicTo(
+        firstControl.dx,
+        firstControl.dy,
+        secondControl.dx,
+        secondControl.dy,
+        end.dx,
+        end.dy,
+      );
+
+    canvas.drawPath(path, paint);
+    _drawArrow(canvas, paint, secondControl, end);
+  }
+
+  void _drawArrow(
+    Canvas canvas,
+    Paint paint,
+    Offset previousPoint,
+    Offset end,
+  ) {
+    final direction = end - previousPoint;
+    final distance = direction.distance;
+    if (distance == 0) {
+      return;
+    }
+
+    final unit = direction / distance;
+    final perpendicular = Offset(-unit.dy, unit.dx);
+    final arrowBase = end - (unit * 10);
     final arrow = Path()
       ..moveTo(end.dx, end.dy)
-      ..lineTo(end.dx - 10, end.dy - 6)
+      ..lineTo(
+        arrowBase.dx + (perpendicular.dx * 6),
+        arrowBase.dy + (perpendicular.dy * 6),
+      )
       ..moveTo(end.dx, end.dy)
-      ..lineTo(end.dx - 10, end.dy + 6);
+      ..lineTo(
+        arrowBase.dx - (perpendicular.dx * 6),
+        arrowBase.dy - (perpendicular.dy * 6),
+      );
+
     canvas.drawPath(arrow, paint);
   }
 
-  List<String> _targetNodeIds(WorkflowNodeDraft node) {
-    return switch (node) {
-      StartNodeDraft() => _nonNullNodeIds([node.nextNodeId]),
-      ActionNodeDraft() => _nonNullNodeIds([node.nextNodeId]),
-      CounterDecisionNodeDraft() => _nonNullNodeIds([
-        node.continueNodeId,
-        node.finishedNodeId,
-      ]),
-      EndNodeDraft() => const [],
-    };
+  Iterable<_RuntimeConnectionLink> _linksFrom(WorkflowNodeDraft node) sync* {
+    switch (node) {
+      case StartNodeDraft():
+        final targetNodeId = node.nextNodeId;
+        if (targetNodeId != null) {
+          yield _RuntimeConnectionLink(
+            source: node,
+            targetNodeId: targetNodeId,
+            kind: _RuntimeConnectionKind.next,
+          );
+        }
+      case ActionNodeDraft():
+        final targetNodeId = node.nextNodeId;
+        if (targetNodeId != null) {
+          yield _RuntimeConnectionLink(
+            source: node,
+            targetNodeId: targetNodeId,
+            kind: _RuntimeConnectionKind.next,
+          );
+        }
+      case CounterDecisionNodeDraft():
+        final continueNodeId = node.continueNodeId;
+        if (continueNodeId != null) {
+          yield _RuntimeConnectionLink(
+            source: node,
+            targetNodeId: continueNodeId,
+            kind: _RuntimeConnectionKind.continueBranch,
+          );
+        }
+
+        final finishedNodeId = node.finishedNodeId;
+        if (finishedNodeId != null) {
+          yield _RuntimeConnectionLink(
+            source: node,
+            targetNodeId: finishedNodeId,
+            kind: _RuntimeConnectionKind.finishedBranch,
+          );
+        }
+      case EndNodeDraft():
+        break;
+    }
   }
 
-  List<String> _nonNullNodeIds(List<String?> nodeIds) {
-    return nodeIds.whereType<String>().toList(growable: false);
+  Color _colorFor(_RuntimeConnectionKind kind) {
+    return switch (kind) {
+      _RuntimeConnectionKind.next => lineColor,
+      _RuntimeConnectionKind.continueBranch => continueColor,
+      _RuntimeConnectionKind.finishedBranch => finishedColor,
+    };
   }
 
   @override
   bool shouldRepaint(covariant _WorkflowConnectionsPainter oldDelegate) {
     return true;
   }
+}
+
+Offset _inputAnchor(WorkflowNodeDraft node) {
+  return Offset(
+    node.position.x,
+    node.position.y + (_nodeCardHeight / 2),
+  );
+}
+
+Offset _outputAnchor(
+  WorkflowNodeDraft node,
+  _RuntimeConnectionKind kind,
+) {
+  final centerY = switch (kind) {
+    _RuntimeConnectionKind.next => _nodeCardHeight / 2,
+    _RuntimeConnectionKind.continueBranch => 42.0,
+    _RuntimeConnectionKind.finishedBranch => 94.0,
+  };
+
+  const outputPortCenterOffset =
+      _WorkflowNodeWidget._portHitSize / 2 -
+      _WorkflowNodeWidget._outputPortOverlap;
+
+  return Offset(
+    node.position.x + _nodeCardWidth + outputPortCenterOffset,
+    node.position.y + centerY,
+  );
 }
