@@ -102,6 +102,45 @@ void main() {
     );
   });
 
+
+  test('loaded workflow continues node numbering without ID collisions', () {
+    final controller = WorkflowEditorController(
+      initialDraft: WorkflowDraft(
+        id: 'stored',
+        name: 'Stored',
+        nodes: [
+          StartNodeDraft(
+            id: 'start',
+            name: 'Start',
+            position: const WorkflowNodePosition(x: 0, y: 0),
+            nextNodeId: 'end',
+          ),
+          WriteFileNodeDraft(
+            id: 'node-7',
+            name: 'Existing',
+            position: const WorkflowNodePosition(x: 100, y: 0),
+            output: WorkflowFileDraft(
+              storage: WorkflowStorage.working,
+              relativePath: 'existing.txt',
+              format: WorkflowFileFormat.plainText,
+            ),
+            nextNodeId: 'end',
+          ),
+          EndNodeDraft(
+            id: 'end',
+            name: 'End',
+            position: const WorkflowNodePosition(x: 200, y: 0),
+          ),
+        ],
+      ),
+    );
+    addTearDown(controller.dispose);
+
+    controller.addNode(WorkflowNodeDraftType.writeFile);
+
+    expect(controller.selectedNodeId, 'node-8');
+  });
+
   test('clears runtime connections when a node is deleted', () {
     final controller = WorkflowEditorController();
     addTearDown(controller.dispose);

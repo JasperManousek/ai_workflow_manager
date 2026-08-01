@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -9,13 +10,20 @@ import 'package:flutter/material.dart';
 import '../workflow/editor/workflow_draft.dart';
 import '../workflow/editor/workflow_editor_controller.dart';
 import '../workflow/files/workflow_file_reference.dart';
+import '../workflow/persistence/workflow_catalog_controller.dart';
+import '../workflow/persistence/workflow_store.dart';
 import '../workflow/run/workflow_run_controller.dart';
 
 const double _nodeCardWidth = 220;
 const double _nodeCardHeight = 136;
 
 class WorkflowsScreen extends StatefulWidget {
-  const WorkflowsScreen({super.key});
+  const WorkflowsScreen({
+    required this.workflowStore,
+    super.key,
+  });
+
+  final WorkflowStore workflowStore;
 
   @override
   State<WorkflowsScreen> createState() => _WorkflowsScreenState();
@@ -24,6 +32,7 @@ class WorkflowsScreen extends StatefulWidget {
 class _WorkflowsScreenState extends State<WorkflowsScreen> {
   late final WorkflowEditorController _controller;
   late final WorkflowRunController _runController;
+  late final WorkflowCatalogController _catalogController;
   late final Listenable _screenListenable;
   String? _lastSourceDirectoryPath;
 
@@ -32,13 +41,20 @@ class _WorkflowsScreenState extends State<WorkflowsScreen> {
     super.initState();
     _controller = WorkflowEditorController();
     _runController = WorkflowRunController();
-    _screenListenable = Listenable.merge([_controller, _runController]);
+    _catalogController = WorkflowCatalogController(store: widget.workflowStore);
+    _screenListenable = Listenable.merge([
+      _controller,
+      _runController,
+      _catalogController,
+    ]);
+    unawaited(_catalogController.refresh());
   }
 
   @override
   void dispose() {
     _controller.dispose();
     _runController.dispose();
+    _catalogController.dispose();
     super.dispose();
   }
 
@@ -52,7 +68,9 @@ class _WorkflowsScreenState extends State<WorkflowsScreen> {
             _WorkflowToolbar(
               controller: _controller,
               runController: _runController,
-              onNewWorkflow: _createNewWorkflow,
+              catalogController: _catalogController,
+              onNewWorkflow: () => unawaited(_createNewWorkflow()),
+              onSave: () => unawaited(_saveWorkflow()),
               onValidate: _showValidationResult,
               onRun: _runWorkflow,
             ),
@@ -61,9 +79,14 @@ class _WorkflowsScreenState extends State<WorkflowsScreen> {
             Expanded(
               child: Row(
                 children: [
-                  IgnorePointer(
-                    ignoring: _runController.isActive,
-                    child: _NodePalette(controller: _controller),
+                  _WorkflowSidebar(
+                    editorController: _controller,
+                    catalogController: _catalogController,
+                    editingEnabled: !_runController.isActive,
+                    onOpenWorkflow: (workflowId) =>
+                        unawaited(_openWorkflow(workflowId)),
+                    onDeleteWorkflow: (workflowId) =>
+                        unawaited(_deleteWorkflow(workflowId)),
                   ),
                   const VerticalDivider(width: 1),
                   Expanded(
@@ -90,9 +113,109 @@ class _WorkflowsScreenState extends State<WorkflowsScreen> {
     );
   }
 
-  void _createNewWorkflow() {
+  Future<void> _createNewWorkflow() async {
+    if (!await _confirmDiscardUnsavedChanges()) {
+      return;
+    }
+
     _controller.createNewWorkflow();
+    _catalogController.startNewWorkflow();
     _runController.clear();
+  }
+
+  Future<void> _saveWorkflow() async {
+    try {
+      await _catalogController.saveWorkflow(_controller.draft);
+
+      if (!mounted) {
+        return;
+      }
+
+      const message = 'Workflow draft saved.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (error) {
+      if (mounted) {
+        _showStorageError(error);
+      }
+    }
+  }
+
+  Future<void> _openWorkflow(String workflowId) async {
+    if (_runController.isActive ||
+        workflowId == _catalogController.selectedWorkflowId) {
+      return;
+    }
+
+    if (!await _confirmDiscardUnsavedChanges()) {
+      return;
+    }
+
+    try {
+      final draft = await _catalogController.openWorkflow(workflowId);
+      _controller.loadWorkflow(draft);
+      _runController.clear();
+    } catch (error) {
+      if (mounted) {
+        _showStorageError(error);
+      }
+    }
+  }
+
+  Future<void> _deleteWorkflow(String workflowId) async {
+    if (_runController.isActive) {
+      return;
+    }
+
+    SavedWorkflowSummary? summary;
+    for (final workflow in _catalogController.workflows) {
+      if (workflow.id == workflowId) {
+        summary = workflow;
+        break;
+      }
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Delete workflow?'),
+          content: Text(
+            'Delete "${summary?.name ?? workflowId}" and all of its saved '
+            'versions? This cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    try {
+      final deletingCurrent =
+          _catalogController.selectedWorkflowId == workflowId;
+      await _catalogController.deleteWorkflow(workflowId);
+
+      if (deletingCurrent) {
+        _controller.createNewWorkflow();
+        _runController.clear();
+      }
+    } catch (error) {
+      if (mounted) {
+        _showStorageError(error);
+      }
+    }
   }
 
   Future<void> _runWorkflow() async {
@@ -115,10 +238,49 @@ class _WorkflowsScreenState extends State<WorkflowsScreen> {
 
     _lastSourceDirectoryPath = sourcePath;
 
+    try {
+      await _catalogController.createVersionForRun(_controller.draft);
+    } catch (error) {
+      if (mounted) {
+        _showStorageError(error);
+      }
+      return;
+    }
+
     await _runController.run(
       workflow: result.definition!,
       sourceDirectory: Directory(sourcePath),
     );
+  }
+
+  Future<bool> _confirmDiscardUnsavedChanges() async {
+    if (!_catalogController.hasUnsavedChanges(_controller.draft)) {
+      return true;
+    }
+
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Discard unsaved changes?'),
+          content: const Text(
+            'The current workflow has changes that have not been saved.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Keep editing'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Discard'),
+            ),
+          ],
+        );
+      },
+    );
+
+    return discard == true;
   }
 
   Future<void> _showValidationResult() async {
@@ -168,25 +330,57 @@ class _WorkflowsScreenState extends State<WorkflowsScreen> {
       },
     );
   }
+
+  void _showStorageError(Object error) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Workflow storage failed: $error')),
+    );
+  }
 }
 
 class _WorkflowToolbar extends StatelessWidget {
   const _WorkflowToolbar({
     required this.controller,
     required this.runController,
+    required this.catalogController,
     required this.onNewWorkflow,
+    required this.onSave,
     required this.onValidate,
     required this.onRun,
   });
 
   final WorkflowEditorController controller;
   final WorkflowRunController runController;
+  final WorkflowCatalogController catalogController;
   final VoidCallback onNewWorkflow;
+  final VoidCallback onSave;
   final VoidCallback onValidate;
   final VoidCallback onRun;
 
   @override
   Widget build(BuildContext context) {
+    final isLocked = runController.isActive || catalogController.isBusy;
+    final hasUnsavedChanges = catalogController.hasUnsavedChanges(
+      controller.draft,
+    );
+    final hasChangesSinceVersion =
+        catalogController.hasChangesSinceCurrentVersion(controller.draft);
+    late final String saveStatus;
+
+    if (catalogController.selectedWorkflowId == null) {
+      saveStatus = 'Not saved';
+    } else if (hasUnsavedChanges) {
+      saveStatus = 'Unsaved changes';
+    } else if (catalogController.selectedVersionNumber == null) {
+      saveStatus = 'Draft saved · not run yet';
+    } else if (hasChangesSinceVersion) {
+      saveStatus = 'Draft saved · changed since run version '
+          '${catalogController.selectedVersionNumber}';
+    } else {
+      saveStatus = 'Saved · run version '
+          '${catalogController.selectedVersionNumber}';
+    }
+
     return Padding(
       padding: const EdgeInsets.all(12),
       child: Row(
@@ -196,9 +390,10 @@ class _WorkflowToolbar extends StatelessWidget {
             child: TextFormField(
               key: ValueKey(controller.draft.id),
               initialValue: controller.draft.name,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Workflow name',
-                border: OutlineInputBorder(),
+                helperText: saveStatus,
+                border: const OutlineInputBorder(),
                 isDense: true,
               ),
               enabled: !runController.isActive,
@@ -207,19 +402,30 @@ class _WorkflowToolbar extends StatelessWidget {
           ),
           const Spacer(),
           OutlinedButton.icon(
-            onPressed: runController.isActive ? null : onNewWorkflow,
+            onPressed: isLocked ? null : onNewWorkflow,
             icon: const Icon(Icons.add),
             label: const Text('New workflow'),
           ),
           const SizedBox(width: 8),
+          OutlinedButton.icon(
+            onPressed: isLocked ? null : onSave,
+            icon: catalogController.isBusy
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save_outlined),
+            label: const Text('Save'),
+          ),
+          const SizedBox(width: 8),
           FilledButton.icon(
-            onPressed: runController.isActive ? null : onValidate,
+            onPressed: isLocked ? null : onValidate,
             icon: const Icon(Icons.check_circle_outline),
             label: const Text('Validate'),
           ),
           const SizedBox(width: 8),
           FilledButton.icon(
-            onPressed: runController.isActive ? null : onRun,
+            onPressed: isLocked ? null : onRun,
             icon: runController.isActive
                 ? const SizedBox.square(
                     dimension: 18,
@@ -317,6 +523,129 @@ class _WorkflowRunStatusBar extends StatelessWidget {
   }
 }
 
+
+class _WorkflowSidebar extends StatelessWidget {
+  const _WorkflowSidebar({
+    required this.editorController,
+    required this.catalogController,
+    required this.editingEnabled,
+    required this.onOpenWorkflow,
+    required this.onDeleteWorkflow,
+  });
+
+  final WorkflowEditorController editorController;
+  final WorkflowCatalogController catalogController;
+  final bool editingEnabled;
+  final ValueChanged<String> onOpenWorkflow;
+  final ValueChanged<String> onDeleteWorkflow;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 250,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Saved workflows',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                if (catalogController.isBusy)
+                  const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+              ],
+            ),
+          ),
+          if (catalogController.errorMessage != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text(
+                catalogController.errorMessage!,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                ),
+              ),
+            ),
+          Expanded(
+            flex: 2,
+            child: catalogController.workflows.isEmpty
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text(
+                        'No saved workflows yet. Use Save to keep the current '
+                        'workflow.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  )
+                : ListView.builder(
+                    itemCount: catalogController.workflows.length,
+                    itemBuilder: (context, index) {
+                      final workflow = catalogController.workflows[index];
+                      final selected =
+                          workflow.id == catalogController.selectedWorkflowId;
+
+                      return ListTile(
+                        key: ValueKey('saved-workflow-${workflow.id}'),
+                        selected: selected,
+                        title: Text(
+                          workflow.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          workflow.currentVersionNumber == null
+                              ? 'Draft only · '
+                                  '${_formatSavedTime(workflow.updatedAt)}'
+                              : 'Run version ${workflow.currentVersionNumber} · '
+                                  '${_formatSavedTime(workflow.updatedAt)}',
+                        ),
+                        onTap: editingEnabled && !catalogController.isBusy
+                            ? () => onOpenWorkflow(workflow.id)
+                            : null,
+                        trailing: IconButton(
+                          tooltip: 'Delete saved workflow',
+                          onPressed: editingEnabled && !catalogController.isBusy
+                              ? () => onDeleteWorkflow(workflow.id)
+                              : null,
+                          icon: const Icon(Icons.delete_outline),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            flex: 3,
+            child: IgnorePointer(
+              ignoring: !editingEnabled,
+              child: SingleChildScrollView(
+                child: _NodePalette(controller: editorController),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _formatSavedTime(DateTime timestamp) {
+    final local = timestamp.toLocal();
+    String twoDigits(int value) => value.toString().padLeft(2, '0');
+
+    return '${local.year}-${twoDigits(local.month)}-${twoDigits(local.day)} '
+        '${twoDigits(local.hour)}:${twoDigits(local.minute)}';
+  }
+}
+
 class _NodePalette extends StatelessWidget {
   const _NodePalette({required this.controller});
 
@@ -324,49 +653,46 @@ class _NodePalette extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 210,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'Add node',
-              style: Theme.of(context).textTheme.titleMedium,
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Add node',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 12),
+          _PaletteButton(
+            icon: Icons.description_outlined,
+            label: 'Write File',
+            onPressed: () => controller.addNode(
+              WorkflowNodeDraftType.writeFile,
             ),
-            const SizedBox(height: 12),
-            _PaletteButton(
-              icon: Icons.description_outlined,
-              label: 'Write File',
-              onPressed: () => controller.addNode(
-                WorkflowNodeDraftType.writeFile,
-              ),
+          ),
+          const SizedBox(height: 8),
+          _PaletteButton(
+            icon: Icons.call_merge,
+            label: 'Combine Text',
+            onPressed: () => controller.addNode(
+              WorkflowNodeDraftType.combineText,
             ),
-            const SizedBox(height: 8),
-            _PaletteButton(
-              icon: Icons.call_merge,
-              label: 'Combine Text',
-              onPressed: () => controller.addNode(
-                WorkflowNodeDraftType.combineText,
-              ),
+          ),
+          const SizedBox(height: 8),
+          _PaletteButton(
+            icon: Icons.alt_route,
+            label: 'Counter Decision',
+            onPressed: () => controller.addNode(
+              WorkflowNodeDraftType.counterDecision,
             ),
-            const SizedBox(height: 8),
-            _PaletteButton(
-              icon: Icons.alt_route,
-              label: 'Counter Decision',
-              onPressed: () => controller.addNode(
-                WorkflowNodeDraftType.counterDecision,
-              ),
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              'Start and End are created automatically. Drag flow handles '
-              'to connect nodes. Use the mouse wheel to zoom and drag the '
-              'empty background to move around the canvas.',
-            ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 20),
+          const Text(
+            'Start and End are created automatically. Drag flow handles '
+            'to connect nodes. Use the mouse wheel to zoom and drag the '
+            'empty background to move around the canvas.',
+          ),
+        ],
       ),
     );
   }

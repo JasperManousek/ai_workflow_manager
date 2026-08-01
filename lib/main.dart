@@ -1,13 +1,58 @@
 import 'package:flutter/material.dart';
 
 import 'screens/workflows_screen.dart';
+import 'workflow/persistence/workflow_store.dart';
 
-void main() {
-  runApp(const AiCoordinatorApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  try {
+    final workflowStore = await WorkflowStore.openDefault();
+    runApp(AiCoordinatorApp(workflowStore: workflowStore));
+  } catch (error) {
+    runApp(_StorageStartupFailureApp(error: error));
+  }
+}
+
+class _StorageStartupFailureApp extends StatelessWidget {
+  const _StorageStartupFailureApp({required this.error});
+
+  final Object error;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      home: Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.storage_outlined, size: 48),
+                const SizedBox(height: 16),
+                const Text(
+                  'Workflow storage could not be opened.',
+                  style: TextStyle(fontSize: 20),
+                ),
+                const SizedBox(height: 8),
+                SelectableText(error.toString()),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class AiCoordinatorApp extends StatelessWidget {
-  const AiCoordinatorApp({super.key});
+  const AiCoordinatorApp({
+    required this.workflowStore,
+    super.key,
+  });
+
+  final WorkflowStore workflowStore;
 
   @override
   Widget build(BuildContext context) {
@@ -20,13 +65,18 @@ class AiCoordinatorApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const MainScreen(),
+      home: MainScreen(workflowStore: workflowStore),
     );
   }
 }
 
 class MainScreen extends StatelessWidget {
-  const MainScreen({super.key});
+  const MainScreen({
+    required this.workflowStore,
+    super.key,
+  });
+
+  final WorkflowStore workflowStore;
 
   @override
   Widget build(BuildContext context) {
@@ -56,17 +106,17 @@ class MainScreen extends StatelessWidget {
               Tab(
                 icon: Icon(Icons.help),
                 text: 'settings',
-              )
+              ),
             ],
           ),
         ),
-        body: const TabBarView(
+        body: TabBarView(
           children: [
-            ChatTab(),
-            WorkflowsScreen(),
-            RunsTab(),
-            NodesTab(),
-            SettingsTab(),
+            const ChatTab(),
+            WorkflowsScreen(workflowStore: workflowStore),
+            const RunsTab(),
+            const NodesTab(),
+            const SettingsTab(),
           ],
         ),
       ),

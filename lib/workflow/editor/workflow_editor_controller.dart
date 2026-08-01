@@ -10,7 +10,10 @@ enum WorkflowNodeDraftType {
 }
 
 class WorkflowEditorController extends ChangeNotifier {
-  WorkflowEditorController() : draft = _createInitialDraft();
+  WorkflowEditorController({WorkflowDraft? initialDraft})
+    : draft = initialDraft ?? _createInitialDraft() {
+    _nextNodeNumber = _nextNodeNumberFor(draft);
+  }
 
   WorkflowDraft draft;
   String? selectedNodeId = 'start';
@@ -29,6 +32,20 @@ class WorkflowEditorController extends ChangeNotifier {
     }
 
     return null;
+  }
+
+
+  void loadWorkflow(WorkflowDraft workflow) {
+    draft = workflow;
+    selectedNodeId = null;
+    for (final node in workflow.nodes) {
+      if (node is StartNodeDraft) {
+        selectedNodeId = node.id;
+        break;
+      }
+    }
+    _nextNodeNumber = _nextNodeNumberFor(workflow);
+    notifyListeners();
   }
 
   void createNewWorkflow() {
@@ -263,6 +280,24 @@ class WorkflowEditorController extends ChangeNotifier {
       x: 300 + (column * 250),
       y: 80 + (row * 160),
     );
+  }
+
+  static int _nextNodeNumberFor(WorkflowDraft draft) {
+    var highestNumber = 0;
+
+    for (final node in draft.nodes) {
+      final match = RegExp(r'^node-(\d+)$').firstMatch(node.id);
+      if (match == null) {
+        continue;
+      }
+
+      final number = int.parse(match.group(1)!);
+      if (number > highestNumber) {
+        highestNumber = number;
+      }
+    }
+
+    return highestNumber + 1;
   }
 
   static WorkflowDraft _createInitialDraft() {

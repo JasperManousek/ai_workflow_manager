@@ -1,8 +1,19 @@
 import 'package:ai_workflow_manager/screens/workflows_screen.dart';
+import 'package:ai_workflow_manager/workflow/persistence/workflow_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  late WorkflowStore store;
+
+  setUp(() async {
+    store = await WorkflowStore.openInMemory();
+  });
+
+  tearDown(() async {
+    await store.close();
+  });
+
   Future<void> pumpWorkflowsScreen(WidgetTester tester) async {
     tester.view.physicalSize = const Size(1600, 900);
     tester.view.devicePixelRatio = 1;
@@ -10,9 +21,53 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     await tester.pumpWidget(
-      const MaterialApp(home: Scaffold(body: WorkflowsScreen())),
+      MaterialApp(
+        home: Scaffold(
+          body: WorkflowsScreen(workflowStore: store),
+        ),
+      ),
     );
+    await tester.pumpAndSettle();
   }
+
+
+  testWidgets('saved workflow can be reopened from the sidebar', (
+    tester,
+  ) async {
+    await pumpWorkflowsScreen(tester);
+
+    await tester.tap(find.text('Write File'));
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('workflow-node-node-1')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final saved = (await store.listWorkflows()).single;
+    expect(saved.currentVersionNumber, isNull);
+
+    await tester.tap(find.text('New workflow'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('workflow-node-node-1')),
+      findsNothing,
+    );
+
+    await tester.tap(
+      find.byKey(ValueKey('saved-workflow-${saved.id}')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Discard'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('workflow-node-node-1')),
+      findsOneWidget,
+    );
+  });
 
   testWidgets('Counter Decision can be selected, edited, and moved', (
     tester,
