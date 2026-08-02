@@ -150,12 +150,19 @@ class WorkflowDraftCodec {
   }
 
   static WorkflowFileDraft _decodeFile(Map<String, dynamic> value) {
+    final storageName = _requireString(value['storage'], 'file.storage');
+
     return WorkflowFileDraft(
-      storage: _enumByName(
-        WorkflowStorage.values,
-        _requireString(value['storage'], 'file.storage'),
-        'storage',
-      ),
+      storage: switch (storageName) {
+        // Compatibility with workflow drafts saved before workspaces existed.
+        'working' => WorkflowStorage.execution,
+        'persistent' => WorkflowStorage.workspace,
+        _ => _enumByName(
+          WorkflowStorage.values,
+          storageName,
+          'storage',
+        ),
+      },
       relativePath: _requireString(value['relativePath'], 'file.relativePath'),
       format: _enumByName(
         WorkflowFileFormat.values,

@@ -117,7 +117,7 @@ class WorkflowRunner {
     WorkflowFileRepository repository,
   ) async {
     final reference = WorkflowFileReference(
-      storage: WorkflowStorage.working,
+      storage: WorkflowStorage.execution,
       relativePath: path.join(
         workflowInternalDirectoryName,
         'counters',

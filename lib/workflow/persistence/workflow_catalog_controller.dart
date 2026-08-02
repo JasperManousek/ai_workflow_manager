@@ -2,12 +2,12 @@ import 'package:flutter/foundation.dart';
 
 import '../editor/workflow_draft.dart';
 import 'workflow_draft_codec.dart';
-import 'workflow_store.dart';
+import '../../storage/application_store.dart';
 
 class WorkflowCatalogController extends ChangeNotifier {
   WorkflowCatalogController({required this.store});
 
-  final WorkflowStore store;
+  final ApplicationStore store;
 
   List<SavedWorkflowSummary> workflows = const [];
   String? selectedWorkflowId;

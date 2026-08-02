@@ -1,14 +1,15 @@
 import 'package:flutter/material.dart';
 
 import 'screens/workflows_screen.dart';
-import 'workflow/persistence/workflow_store.dart';
+import 'screens/workspaces_screen.dart';
+import 'storage/application_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   try {
-    final workflowStore = await WorkflowStore.openDefault();
-    runApp(AiCoordinatorApp(workflowStore: workflowStore));
+    final applicationStore = await ApplicationStore.openDefault();
+    runApp(AiCoordinatorApp(applicationStore: applicationStore));
   } catch (error) {
     runApp(_StorageStartupFailureApp(error: error));
   }
@@ -32,7 +33,7 @@ class _StorageStartupFailureApp extends StatelessWidget {
                 const Icon(Icons.storage_outlined, size: 48),
                 const SizedBox(height: 16),
                 const Text(
-                  'Workflow storage could not be opened.',
+                  'Application storage could not be opened.',
                   style: TextStyle(fontSize: 20),
                 ),
                 const SizedBox(height: 8),
@@ -48,11 +49,11 @@ class _StorageStartupFailureApp extends StatelessWidget {
 
 class AiCoordinatorApp extends StatelessWidget {
   const AiCoordinatorApp({
-    required this.workflowStore,
+    required this.applicationStore,
     super.key,
   });
 
-  final WorkflowStore workflowStore;
+  final ApplicationStore applicationStore;
 
   @override
   Widget build(BuildContext context) {
@@ -65,18 +66,18 @@ class AiCoordinatorApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: MainScreen(workflowStore: workflowStore),
+      home: MainScreen(applicationStore: applicationStore),
     );
   }
 }
 
 class MainScreen extends StatelessWidget {
   const MainScreen({
-    required this.workflowStore,
+    required this.applicationStore,
     super.key,
   });
 
-  final WorkflowStore workflowStore;
+  final ApplicationStore applicationStore;
 
   @override
   Widget build(BuildContext context) {
@@ -96,8 +97,8 @@ class MainScreen extends StatelessWidget {
                 text: 'Workflows',
               ),
               Tab(
-                icon: Icon(Icons.account_tree),
-                text: 'runs',
+                icon: Icon(Icons.workspaces_outline),
+                text: 'Workspaces',
               ),
               Tab(
                 icon: Icon(Icons.account_tree),
@@ -113,8 +114,8 @@ class MainScreen extends StatelessWidget {
         body: TabBarView(
           children: [
             const ChatTab(),
-            WorkflowsScreen(workflowStore: workflowStore),
-            const RunsTab(),
+            WorkflowsScreen(applicationStore: applicationStore),
+            WorkspacesScreen(applicationStore: applicationStore),
             const NodesTab(),
             const SettingsTab(),
           ],
@@ -140,20 +141,6 @@ class ChatTab extends StatelessWidget {
 
 class SettingsTab extends StatelessWidget {
   const SettingsTab({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(
-      child: Text(
-        'Application settings will go here.',
-        style: TextStyle(fontSize: 20),
-      ),
-    );
-  }
-}
-
-class RunsTab extends StatelessWidget {
-  const RunsTab({super.key});
 
   @override
   Widget build(BuildContext context) {

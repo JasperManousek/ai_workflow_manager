@@ -4,19 +4,20 @@ import 'package:path/path.dart' as path;
 import 'package:sqflite_common/sqlite_api.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-import '../../storage/application_data_directory.dart';
-import '../editor/workflow_draft.dart';
-import 'workflow_draft_codec.dart';
+import 'application_data_directory.dart';
+import '../workflow/editor/workflow_draft.dart';
+import '../workflow/persistence/workflow_draft_codec.dart';
+import '../workspace/workspace.dart';
 
-class WorkflowStore {
-  WorkflowStore._(this._database);
+class ApplicationStore {
+  ApplicationStore._(this._database);
 
-  static const int _databaseVersion = 1;
+  static const int _databaseVersion = 2;
   static const String _databaseFileName = 'workflows.sqlite3';
 
   final Database _database;
 
-  static Future<WorkflowStore> openDefault({
+  static Future<ApplicationStore> openDefault({
     Directory? applicationDataDirectory,
   }) async {
     sqfliteFfiInit();
@@ -33,13 +34,14 @@ class WorkflowStore {
           await database.execute('PRAGMA foreign_keys = ON');
         },
         onCreate: _createSchema,
+        onUpgrade: _upgradeSchema,
       ),
     );
 
-    return WorkflowStore._(database);
+    return ApplicationStore._(database);
   }
 
-  static Future<WorkflowStore> openInMemory() async {
+  static Future<ApplicationStore> openInMemory() async {
     sqfliteFfiInit();
 
     final database = await databaseFactoryFfi.openDatabase(
@@ -50,10 +52,11 @@ class WorkflowStore {
           await database.execute('PRAGMA foreign_keys = ON');
         },
         onCreate: _createSchema,
+        onUpgrade: _upgradeSchema,
       ),
     );
 
-    return WorkflowStore._(database);
+    return ApplicationStore._(database);
   }
 
   Future<List<SavedWorkflowSummary>> listWorkflows() async {
@@ -124,17 +127,22 @@ class WorkflowStore {
           limit: 1,
         );
 
-        if (currentRows.isNotEmpty &&
-            currentRows.single['snapshot_json'] == snapshotJson) {
+        if (currentRows.isNotEmpty) {
           final row = currentRows.single;
-          return SavedWorkflowVersion(
-            workflowId: draft.id,
-            versionId: currentVersionId,
-            versionNumber: row['version_number'] as int,
-            snapshotJson: snapshotJson,
-            createdAt: DateTime.parse(row['created_at'] as String),
-            createdNewVersion: false,
+          final currentSnapshotJson = _normalizeWorkflowSnapshot(
+            row['snapshot_json'] as String,
           );
+
+          if (currentSnapshotJson == snapshotJson) {
+            return SavedWorkflowVersion(
+              workflowId: draft.id,
+              versionId: currentVersionId,
+              versionNumber: row['version_number'] as int,
+              snapshotJson: snapshotJson,
+              createdAt: DateTime.parse(row['created_at'] as String),
+              createdNewVersion: false,
+            );
+          }
         }
       }
 
@@ -198,12 +206,16 @@ class WorkflowStore {
     }
 
     final row = rows.single;
-    final draftSnapshotJson = row['draft_json'] as String;
+    final draftSnapshotJson = _normalizeWorkflowSnapshot(
+      row['draft_json'] as String,
+    );
     final versionId = row['version_id'] as int?;
 
     SavedWorkflowVersion? version;
     if (versionId != null) {
-      final versionSnapshotJson = row['snapshot_json'] as String;
+      final versionSnapshotJson = _normalizeWorkflowSnapshot(
+        row['snapshot_json'] as String,
+      );
       version = SavedWorkflowVersion(
         workflowId: workflowId,
         versionId: versionId,
@@ -233,7 +245,93 @@ class WorkflowStore {
     }
   }
 
+  Future<List<SavedWorkspaceSummary>> listWorkspaces() async {
+    final rows = await _database.query(
+      'workspaces',
+      orderBy: 'updated_at DESC, name COLLATE NOCASE',
+    );
+
+    return rows.map(SavedWorkspaceSummary.fromRow).toList(growable: false);
+  }
+
+  Future<Workspace> saveWorkspace(Workspace workspace) async {
+    final errors = validateWorkspace(workspace);
+    if (errors.isNotEmpty) {
+      throw InvalidWorkspaceException(errors);
+    }
+
+    final nowText = DateTime.now().toUtc().toIso8601String();
+    final existing = await _database.query(
+      'workspaces',
+      columns: ['created_at'],
+      where: 'id = ?',
+      whereArgs: [workspace.id],
+      limit: 1,
+    );
+
+    final values = {
+      'id': workspace.id,
+      'name': workspace.name,
+      'source_directory': workspace.sourceDirectoryPath,
+      'shared_data_directory': workspace.sharedDataDirectoryPath,
+      'created_at': existing.isEmpty
+          ? nowText
+          : existing.single['created_at'] as String,
+      'updated_at': nowText,
+    };
+
+    if (existing.isEmpty) {
+      await _database.insert('workspaces', values);
+    } else {
+      await _database.update(
+        'workspaces',
+        values,
+        where: 'id = ?',
+        whereArgs: [workspace.id],
+      );
+    }
+
+    return workspace;
+  }
+
+  Future<Workspace> loadWorkspace(String workspaceId) async {
+    final rows = await _database.query(
+      'workspaces',
+      where: 'id = ?',
+      whereArgs: [workspaceId],
+      limit: 1,
+    );
+
+    if (rows.isEmpty) {
+      throw WorkspaceNotFoundException(workspaceId);
+    }
+
+    return _workspaceFromRow(rows.single);
+  }
+
+  Future<void> deleteWorkspace(String workspaceId) async {
+    final deleted = await _database.delete(
+      'workspaces',
+      where: 'id = ?',
+      whereArgs: [workspaceId],
+    );
+
+    if (deleted == 0) {
+      throw WorkspaceNotFoundException(workspaceId);
+    }
+  }
+
   Future<void> close() => _database.close();
+
+  static String _normalizeWorkflowSnapshot(String snapshotJson) {
+    try {
+      return WorkflowDraftCodec.encode(
+        WorkflowDraftCodec.decode(snapshotJson),
+      );
+    } on FormatException {
+      return snapshotJson;
+    }
+  }
 
   static Future<void> _upsertDraft(
     Transaction transaction, {
@@ -275,6 +373,21 @@ class WorkflowStore {
   }
 
   static Future<void> _createSchema(Database database, int version) async {
+    await _createWorkflowSchema(database);
+    await _createWorkspaceSchema(database);
+  }
+
+  static Future<void> _upgradeSchema(
+    Database database,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    if (oldVersion < 2) {
+      await _createWorkspaceSchema(database);
+    }
+  }
+
+  static Future<void> _createWorkflowSchema(Database database) async {
     await database.execute('''
       CREATE TABLE workflows (
         id TEXT PRIMARY KEY NOT NULL,
@@ -302,6 +415,28 @@ class WorkflowStore {
       CREATE INDEX workflow_versions_workflow_id_index
       ON workflow_versions(workflow_id)
     ''');
+  }
+
+  static Future<void> _createWorkspaceSchema(Database database) async {
+    await database.execute('''
+      CREATE TABLE workspaces (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL,
+        source_directory TEXT NOT NULL,
+        shared_data_directory TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+  }
+
+  static Workspace _workspaceFromRow(Map<String, Object?> row) {
+    return Workspace(
+      id: row['id'] as String,
+      name: row['name'] as String,
+      sourceDirectoryPath: row['source_directory'] as String,
+      sharedDataDirectoryPath: row['shared_data_directory'] as String,
+    );
   }
 }
 
@@ -377,4 +512,39 @@ class WorkflowNotFoundException implements Exception {
 
   @override
   String toString() => 'Workflow "$workflowId" was not found.';
+}
+
+class SavedWorkspaceSummary {
+  const SavedWorkspaceSummary({
+    required this.id,
+    required this.name,
+    required this.sourceDirectoryPath,
+    required this.sharedDataDirectoryPath,
+    required this.updatedAt,
+  });
+
+  factory SavedWorkspaceSummary.fromRow(Map<String, Object?> row) {
+    return SavedWorkspaceSummary(
+      id: row['id'] as String,
+      name: row['name'] as String,
+      sourceDirectoryPath: row['source_directory'] as String,
+      sharedDataDirectoryPath: row['shared_data_directory'] as String,
+      updatedAt: DateTime.parse(row['updated_at'] as String),
+    );
+  }
+
+  final String id;
+  final String name;
+  final String sourceDirectoryPath;
+  final String sharedDataDirectoryPath;
+  final DateTime updatedAt;
+}
+
+class WorkspaceNotFoundException implements Exception {
+  const WorkspaceNotFoundException(this.workspaceId);
+
+  final String workspaceId;
+
+  @override
+  String toString() => 'Workspace "$workspaceId" was not found.';
 }

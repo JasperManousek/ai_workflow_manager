@@ -18,7 +18,7 @@ void main() {
   );
 
   const output = WorkflowFileReference(
-    storage: WorkflowStorage.working,
+    storage: WorkflowStorage.execution,
     relativePath: 'combined.md',
     format: WorkflowFileFormat.markdown,
   );
@@ -38,7 +38,7 @@ void main() {
           name: 'Write introduction',
           content: 'Introduction\n',
           output: const WorkflowFileReference(
-            storage: WorkflowStorage.working,
+            storage: WorkflowStorage.execution,
             relativePath: 'introduction.md',
             format: WorkflowFileFormat.markdown,
           ),
@@ -304,7 +304,7 @@ void main() {
     );
   });
 
-  test('reserves the internal working directory for the runner', () {
+  test('reserves the internal execution directory for the runner', () {
     final workflow = WorkflowDefinition(
       id: 'workflow-1',
       name: 'Internal path collision',
@@ -319,7 +319,7 @@ void main() {
           name: 'Write internal path',
           content: 'Not allowed',
           output: const WorkflowFileReference(
-            storage: WorkflowStorage.working,
+            storage: WorkflowStorage.execution,
             relativePath: '.workflow_internal/counters/manual.json',
             format: WorkflowFileFormat.json,
           ),
@@ -338,7 +338,7 @@ void main() {
         isA<WorkflowValidationException>().having(
           (exception) => exception.errors.join('\n'),
           'errors',
-          contains('reserved working path'),
+          contains('reserved execution path'),
         ),
       ),
     );

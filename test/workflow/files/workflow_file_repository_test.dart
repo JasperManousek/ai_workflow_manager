@@ -25,16 +25,16 @@ void main() {
           'source',
         ),
       )..createSync(),
-      working: Directory(
+      execution: Directory(
         path.join(
           testDirectory.path,
-          'working',
+          'execution',
         ),
       )..createSync(),
-      persistent: Directory(
+      workspace: Directory(
         path.join(
           testDirectory.path,
-          'persistent',
+          'workspace',
         ),
       )..createSync(),
     );
@@ -62,7 +62,7 @@ void main() {
   group('exists', () {
     test('returns false for a missing file', () async {
       const reference = WorkflowFileReference(
-        storage: WorkflowStorage.working,
+        storage: WorkflowStorage.execution,
         relativePath: 'missing.txt',
         format: WorkflowFileFormat.plainText,
       );
@@ -215,7 +215,7 @@ void main() {
   group('writeText', () {
     test('creates parent directories and writes a file', () async {
       const reference = WorkflowFileReference(
-        storage: WorkflowStorage.working,
+        storage: WorkflowStorage.execution,
         relativePath: 'prepared/context.md',
         format: WorkflowFileFormat.markdown,
       );
@@ -227,7 +227,7 @@ void main() {
 
       final writtenFile = File(
         path.join(
-          roots.working.path,
+          roots.execution.path,
           'prepared',
           'context.md',
         ),
@@ -254,10 +254,10 @@ void main() {
       );
     });
 
-    test('replaces an existing persistent file', () async {
+    test('replaces an existing workspace file', () async {
       final existingFile = File(
         path.join(
-          roots.persistent.path,
+          roots.workspace.path,
           'summary.txt',
         ),
       );
@@ -267,7 +267,7 @@ void main() {
       );
 
       const reference = WorkflowFileReference(
-        storage: WorkflowStorage.persistent,
+        storage: WorkflowStorage.workspace,
         relativePath: 'summary.txt',
         format: WorkflowFileFormat.plainText,
       );
@@ -334,7 +334,7 @@ void main() {
   group('JSON', () {
     test('writes and reads structured JSON', () async {
       const reference = WorkflowFileReference(
-        storage: WorkflowStorage.working,
+        storage: WorkflowStorage.execution,
         relativePath: 'state/counter.json',
         format: WorkflowFileFormat.json,
       );
@@ -362,7 +362,7 @@ void main() {
 
     test('rejects readJson for a non-JSON reference', () async {
       const reference = WorkflowFileReference(
-        storage: WorkflowStorage.working,
+        storage: WorkflowStorage.execution,
         relativePath: 'notes.md',
         format: WorkflowFileFormat.markdown,
       );
@@ -382,7 +382,7 @@ void main() {
     test('reports invalid JSON content', () async {
       final invalidFile = File(
         path.join(
-          roots.working.path,
+          roots.execution.path,
           'invalid.json',
         ),
       );
@@ -392,7 +392,7 @@ void main() {
       );
 
       const reference = WorkflowFileReference(
-        storage: WorkflowStorage.working,
+        storage: WorkflowStorage.execution,
         relativePath: 'invalid.json',
         format: WorkflowFileFormat.json,
       );

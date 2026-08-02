@@ -11,7 +11,7 @@ import '../workflow/editor/workflow_draft.dart';
 import '../workflow/editor/workflow_editor_controller.dart';
 import '../workflow/files/workflow_file_reference.dart';
 import '../workflow/persistence/workflow_catalog_controller.dart';
-import '../workflow/persistence/workflow_store.dart';
+import '../storage/application_store.dart';
 import '../workflow/run/workflow_run_controller.dart';
 
 const double _nodeCardWidth = 220;
@@ -19,11 +19,11 @@ const double _nodeCardHeight = 136;
 
 class WorkflowsScreen extends StatefulWidget {
   const WorkflowsScreen({
-    required this.workflowStore,
+    required this.applicationStore,
     super.key,
   });
 
-  final WorkflowStore workflowStore;
+  final ApplicationStore applicationStore;
 
   @override
   State<WorkflowsScreen> createState() => _WorkflowsScreenState();
@@ -41,7 +41,9 @@ class _WorkflowsScreenState extends State<WorkflowsScreen> {
     super.initState();
     _controller = WorkflowEditorController();
     _runController = WorkflowRunController();
-    _catalogController = WorkflowCatalogController(store: widget.workflowStore);
+    _catalogController = WorkflowCatalogController(
+      store: widget.applicationStore,
+    );
     _screenListenable = Listenable.merge([
       _controller,
       _runController,
@@ -238,8 +240,11 @@ class _WorkflowsScreenState extends State<WorkflowsScreen> {
 
     _lastSourceDirectoryPath = sourcePath;
 
+    late final SavedWorkflowVersion version;
     try {
-      await _catalogController.createVersionForRun(_controller.draft);
+      version = await _catalogController.createVersionForRun(
+        _controller.draft,
+      );
     } catch (error) {
       if (mounted) {
         _showStorageError(error);
@@ -250,6 +255,7 @@ class _WorkflowsScreenState extends State<WorkflowsScreen> {
     await _runController.run(
       workflow: result.definition!,
       sourceDirectory: Directory(sourcePath),
+      workflowVersionNumber: version.versionNumber,
     );
   }
 
@@ -464,7 +470,7 @@ class _WorkflowRunStatusBar extends StatelessWidget {
         break;
       case WorkflowRunStatus.preparing:
         icon = Icons.hourglass_top;
-        title = 'Preparing run';
+        title = 'Preparing execution';
         color = colorScheme.primary;
         break;
       case WorkflowRunStatus.running:
@@ -474,12 +480,12 @@ class _WorkflowRunStatusBar extends StatelessWidget {
         break;
       case WorkflowRunStatus.completed:
         icon = Icons.check_circle_outline;
-        title = 'Workflow completed';
+        title = 'Execution completed';
         color = colorScheme.primary;
         break;
       case WorkflowRunStatus.failed:
         icon = Icons.error_outline;
-        title = 'Workflow failed';
+        title = 'Execution failed';
         color = colorScheme.error;
         break;
     }
@@ -510,7 +516,7 @@ class _WorkflowRunStatusBar extends StatelessWidget {
                 if (controller.runDirectory != null) ...[
                   const SizedBox(height: 4),
                   SelectableText(
-                    'Run folder: ${controller.runDirectory!.path}',
+                    'Execution folder: ${controller.runDirectory!.path}',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
@@ -1832,8 +1838,12 @@ class _FileReferenceEditor extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final storageOptions = isOutput
-        ? const [WorkflowStorage.working]
-        : const [WorkflowStorage.source, WorkflowStorage.working];
+        ? const [WorkflowStorage.execution, WorkflowStorage.workspace]
+        : const [
+            WorkflowStorage.source,
+            WorkflowStorage.workspace,
+            WorkflowStorage.execution,
+          ];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1909,8 +1919,8 @@ class _FileReferenceEditor extends StatelessWidget {
   String _storageLabel(WorkflowStorage storage) {
     return switch (storage) {
       WorkflowStorage.source => 'Source (read-only)',
-      WorkflowStorage.working => 'Working',
-      WorkflowStorage.persistent => 'Persistent',
+      WorkflowStorage.execution => 'Execution',
+      WorkflowStorage.workspace => 'Workspace shared',
     };
   }
 }

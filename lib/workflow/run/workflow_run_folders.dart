@@ -7,15 +7,15 @@ import '../../storage/application_data_directory.dart';
 class WorkflowRunFolders {
   const WorkflowRunFolders({
     required this.root,
-    required this.working,
+    required this.execution,
     required this.logs,
-    required this.persistentPlaceholder,
+    required this.workspacePlaceholder,
   });
 
   final Directory root;
-  final Directory working;
+  final Directory execution;
   final Directory logs;
-  final Directory persistentPlaceholder;
+  final Directory workspacePlaceholder;
 }
 
 Directory defaultWorkflowRunsRoot() {
@@ -33,21 +33,21 @@ Future<WorkflowRunFolders> createWorkflowRunFolders({
   final root = Directory(
     path.join(runsRoot.path, 'run-$timestamp-$safeWorkflowId'),
   );
-  final working = Directory(path.join(root.path, 'work'));
+  final execution = Directory(path.join(root.path, 'work'));
   final logs = Directory(path.join(root.path, 'logs'));
-  final persistentPlaceholder = Directory(
-    path.join(root.path, 'persistent-unavailable'),
+  final workspacePlaceholder = Directory(
+    path.join(root.path, 'workspace-unavailable'),
   );
 
-  await working.create(recursive: true);
+  await execution.create(recursive: true);
   await logs.create(recursive: true);
-  await persistentPlaceholder.create(recursive: true);
+  await workspacePlaceholder.create(recursive: true);
 
   return WorkflowRunFolders(
     root: root,
-    working: working,
+    execution: execution,
     logs: logs,
-    persistentPlaceholder: persistentPlaceholder,
+    workspacePlaceholder: workspacePlaceholder,
   );
 }
 

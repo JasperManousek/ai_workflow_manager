@@ -5,24 +5,24 @@ import 'workflow_file_reference.dart';
 class WorkflowFileRoots {
   WorkflowFileRoots({
     required this.source,
-    required this.working,
-    required this.persistent,
+    required this.execution,
+    required this.workspace,
   });
 
   final Directory source;
-  final Directory working;
-  final Directory persistent;
+  final Directory execution;
+  final Directory workspace;
 
   Directory rootFor(WorkflowStorage storage) {
     switch (storage) {
       case WorkflowStorage.source:
         return source;
 
-      case WorkflowStorage.working:
-        return working;
+      case WorkflowStorage.execution:
+        return execution;
 
-      case WorkflowStorage.persistent:
-        return persistent;
+      case WorkflowStorage.workspace:
+        return workspace;
     }
   }
 }

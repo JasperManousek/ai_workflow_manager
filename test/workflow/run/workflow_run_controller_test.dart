@@ -10,6 +10,7 @@ import 'package:path/path.dart' as path;
 void main() {
   late Directory temporaryDirectory;
   late Directory sourceDirectory;
+  late Directory workspaceDirectory;
   late Directory runsRoot;
 
   setUp(() async {
@@ -19,15 +20,19 @@ void main() {
     sourceDirectory = Directory(
       path.join(temporaryDirectory.path, 'source'),
     );
+    workspaceDirectory = Directory(
+      path.join(temporaryDirectory.path, 'workspace'),
+    );
     runsRoot = Directory(path.join(temporaryDirectory.path, 'runs'));
     await sourceDirectory.create();
+    await workspaceDirectory.create();
   });
 
   tearDown(() async {
     await temporaryDirectory.delete(recursive: true);
   });
 
-  test('executes a workflow and creates an isolated working directory', () async {
+  test('executes a workflow and creates isolated execution data', () async {
     final controller = WorkflowRunController(runsRoot: runsRoot);
     final visitedNodeIds = <String>[];
 
@@ -41,13 +46,15 @@ void main() {
 
     await controller.run(
       workflow: _writeFileWorkflow(
-        outputStorage: WorkflowStorage.working,
+        outputStorage: WorkflowStorage.execution,
       ),
       sourceDirectory: sourceDirectory,
+      workflowVersionNumber: 3,
     );
 
     expect(controller.status, WorkflowRunStatus.completed);
     expect(controller.failureMessage, isNull);
+    expect(controller.workflowVersionNumber, 3);
     expect(visitedNodeIds, ['start', 'write', 'end']);
 
     final runDirectory = controller.runDirectory;
@@ -60,10 +67,10 @@ void main() {
     );
   });
 
-  test('creates a separate run directory for every execution', () async {
+  test('creates a separate execution directory every time', () async {
     final controller = WorkflowRunController(runsRoot: runsRoot);
     final workflow = _writeFileWorkflow(
-      outputStorage: WorkflowStorage.working,
+      outputStorage: WorkflowStorage.execution,
     );
 
     await controller.run(
@@ -112,7 +119,7 @@ void main() {
               ),
             ],
             output: const WorkflowFileReference(
-              storage: WorkflowStorage.working,
+              storage: WorkflowStorage.execution,
               relativePath: 'combined.txt',
               format: WorkflowFileFormat.plainText,
             ),
@@ -130,19 +137,39 @@ void main() {
     expect(controller.failureMessage, contains('missing-one.txt'));
   });
 
-  test('rejects persistent storage until source contexts exist', () async {
+  test('requires a workspace for workspace shared references', () async {
     final controller = WorkflowRunController(runsRoot: runsRoot);
 
     await controller.run(
       workflow: _writeFileWorkflow(
-        outputStorage: WorkflowStorage.persistent,
+        outputStorage: WorkflowStorage.workspace,
       ),
       sourceDirectory: sourceDirectory,
     );
 
     expect(controller.status, WorkflowRunStatus.failed);
     expect(controller.runDirectory, isNull);
-    expect(controller.failureMessage, contains('Persistent storage'));
+    expect(controller.failureMessage, contains('executed from a workspace'));
+  });
+
+  test('writes workspace data and reports the changed file', () async {
+    final controller = WorkflowRunController(runsRoot: runsRoot);
+
+    await controller.run(
+      workflow: _writeFileWorkflow(
+        outputStorage: WorkflowStorage.workspace,
+      ),
+      sourceDirectory: sourceDirectory,
+      workspaceDirectory: workspaceDirectory,
+    );
+
+    expect(controller.status, WorkflowRunStatus.completed);
+    expect(
+      await File(path.join(workspaceDirectory.path, 'result.txt')).readAsString(),
+      'generated content',
+    );
+    expect(controller.workspaceFilesChanged, ['result.txt']);
+    expect(controller.latestActivity, 'Execution completed.');
   });
 }
 

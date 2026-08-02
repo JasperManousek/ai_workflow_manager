@@ -58,7 +58,7 @@ void main() {
       ..relativePath = 'first.txt'
       ..format = WorkflowFileFormat.plainText;
     combineNode.output
-      ..storage = WorkflowStorage.working
+      ..storage = WorkflowStorage.execution
       ..relativePath = 'combined.md'
       ..format = WorkflowFileFormat.markdown;
 
@@ -120,7 +120,7 @@ void main() {
             name: 'Existing',
             position: const WorkflowNodePosition(x: 100, y: 0),
             output: WorkflowFileDraft(
-              storage: WorkflowStorage.working,
+              storage: WorkflowStorage.execution,
               relativePath: 'existing.txt',
               format: WorkflowFileFormat.plainText,
             ),

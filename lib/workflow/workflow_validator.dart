@@ -162,7 +162,7 @@ class WorkflowValidator {
     WorkflowNode node,
     List<String> errors,
   ) {
-    if (reference.storage != WorkflowStorage.working) {
+    if (reference.storage != WorkflowStorage.execution) {
       return;
     }
 
@@ -172,7 +172,7 @@ class WorkflowValidator {
     if (segments.isNotEmpty &&
         segments.first == workflowInternalDirectoryName) {
       errors.add(
-        'Node "${node.name}" cannot use the reserved working path '
+        'Node "${node.name}" cannot use the reserved execution path '
         '"${reference.relativePath}".',
       );
     }

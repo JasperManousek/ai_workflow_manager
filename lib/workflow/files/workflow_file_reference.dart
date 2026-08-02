@@ -1,7 +1,7 @@
 enum WorkflowStorage {
   source,
-  working,
-  persistent,
+  execution,
+  workspace,
 }
 
 enum WorkflowFileFormat {

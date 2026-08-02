@@ -1,15 +1,15 @@
 import 'package:ai_workflow_manager/workflow/editor/workflow_editor_controller.dart';
 import 'package:ai_workflow_manager/workflow/persistence/workflow_catalog_controller.dart';
-import 'package:ai_workflow_manager/workflow/persistence/workflow_store.dart';
+import 'package:ai_workflow_manager/storage/application_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  late WorkflowStore store;
+  late ApplicationStore store;
   late WorkflowCatalogController catalog;
   late WorkflowEditorController editor;
 
   setUp(() async {
-    store = await WorkflowStore.openInMemory();
+    store = await ApplicationStore.openInMemory();
     catalog = WorkflowCatalogController(store: store);
     editor = WorkflowEditorController();
   });

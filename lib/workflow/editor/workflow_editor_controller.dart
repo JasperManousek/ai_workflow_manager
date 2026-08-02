@@ -76,7 +76,7 @@ class WorkflowEditorController extends ChangeNotifier {
         name: 'Write File $nodeNumber',
         position: position,
         output: WorkflowFileDraft(
-          storage: WorkflowStorage.working,
+          storage: WorkflowStorage.execution,
           relativePath: '',
           format: WorkflowFileFormat.plainText,
         ),
@@ -98,7 +98,7 @@ class WorkflowEditorController extends ChangeNotifier {
           ),
         ],
         output: WorkflowFileDraft(
-          storage: WorkflowStorage.working,
+          storage: WorkflowStorage.execution,
           relativePath: '',
           format: WorkflowFileFormat.plainText,
         ),

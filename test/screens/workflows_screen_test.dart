@@ -1,13 +1,13 @@
 import 'package:ai_workflow_manager/screens/workflows_screen.dart';
-import 'package:ai_workflow_manager/workflow/persistence/workflow_store.dart';
+import 'package:ai_workflow_manager/storage/application_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  late WorkflowStore store;
+  late ApplicationStore store;
 
   setUp(() async {
-    store = await WorkflowStore.openInMemory();
+    store = await ApplicationStore.openInMemory();
   });
 
   tearDown(() async {
@@ -23,7 +23,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: WorkflowsScreen(workflowStore: store),
+          body: WorkflowsScreen(applicationStore: store),
         ),
       ),
     );

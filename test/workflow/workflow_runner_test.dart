@@ -23,9 +23,9 @@ void main() {
     roots = WorkflowFileRoots(
       source: Directory(path.join(testDirectory.path, 'source'))
         ..createSync(),
-      working: Directory(path.join(testDirectory.path, 'working'))
+      execution: Directory(path.join(testDirectory.path, 'execution'))
         ..createSync(),
-      persistent: Directory(path.join(testDirectory.path, 'persistent'))
+      workspace: Directory(path.join(testDirectory.path, 'workspace'))
         ..createSync(),
     );
 
@@ -57,7 +57,7 @@ void main() {
           name: 'Write greeting',
           content: 'Hello from the workflow.\n',
           output: const WorkflowFileReference(
-            storage: WorkflowStorage.working,
+            storage: WorkflowStorage.execution,
             relativePath: 'generated/greeting.md',
             format: WorkflowFileFormat.markdown,
           ),
@@ -74,7 +74,7 @@ void main() {
 
     final output = File(
       path.join(
-        roots.working.path,
+        roots.execution.path,
         'generated',
         'greeting.md',
       ),
@@ -127,7 +127,7 @@ void main() {
             ),
           ],
           output: const WorkflowFileReference(
-            storage: WorkflowStorage.working,
+            storage: WorkflowStorage.execution,
             relativePath: 'combined.md',
             format: WorkflowFileFormat.markdown,
           ),
@@ -142,7 +142,7 @@ void main() {
 
     await runner.run(workflow);
 
-    final output = File(path.join(roots.working.path, 'combined.md'));
+    final output = File(path.join(roots.execution.path, 'combined.md'));
 
     expect(
       await output.readAsString(),
@@ -179,7 +179,7 @@ void main() {
           name: 'Separate result',
           content: 'separate',
           output: const WorkflowFileReference(
-            storage: WorkflowStorage.working,
+            storage: WorkflowStorage.execution,
             relativePath: 'result.txt',
             format: WorkflowFileFormat.plainText,
           ),
@@ -190,7 +190,7 @@ void main() {
           name: 'Shared result',
           content: 'shared',
           output: const WorkflowFileReference(
-            storage: WorkflowStorage.working,
+            storage: WorkflowStorage.execution,
             relativePath: 'result.txt',
             format: WorkflowFileFormat.plainText,
           ),
@@ -205,7 +205,7 @@ void main() {
 
     await runner.run(workflow);
 
-    final output = File(path.join(roots.working.path, 'result.txt'));
+    final output = File(path.join(roots.execution.path, 'result.txt'));
 
     expect(await output.readAsString(), 'shared');
   });
@@ -270,7 +270,7 @@ void main() {
             ),
           ],
           output: const WorkflowFileReference(
-            storage: WorkflowStorage.working,
+            storage: WorkflowStorage.execution,
             relativePath: 'combined.md',
             format: WorkflowFileFormat.markdown,
           ),
